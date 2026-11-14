@@ -1,0 +1,196 @@
+{
+  "entities": {
+    "DailyTask": {
+      "title": "DailyTask",
+      "description": "A daily task or routine item organized by the user or Sathi AI.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated owner UID"
+        },
+        "title": {
+          "type": "string",
+          "description": "Short task title"
+        },
+        "note": {
+          "type": "string",
+          "description": "Optional notes or details"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["WORK", "PERSONAL", "HEALTH", "ROUTINE"],
+          "description": "Task category"
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["HIGH", "MEDIUM", "LOW"],
+          "description": "Task priority level"
+        },
+        "scheduledTime": {
+          "type": "string",
+          "description": "Scheduled time label such as 08:30 AM"
+        },
+        "completed": {
+          "type": "boolean",
+          "description": "Completion flag"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp on creation via FieldValue.serverTimestamp()"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp on update via FieldValue.serverTimestamp()"
+        }
+      },
+      "required": ["userId", "title", "category", "priority", "completed", "createdAt", "updatedAt"]
+    },
+    "DevicePermissions": {
+      "title": "DevicePermissions",
+      "description": "User-selected AI device control permission switches.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated owner UID"
+        },
+        "masterEnabled": {
+          "type": "boolean",
+          "description": "Master toggle for AI device control"
+        },
+        "allowVoiceMic": {
+          "type": "boolean"
+        },
+        "allowTtsSpeech": {
+          "type": "boolean"
+        },
+        "allowFlashlight": {
+          "type": "boolean"
+        },
+        "allowVolumeControl": {
+          "type": "boolean"
+        },
+        "allowDisplayAndSettings": {
+          "type": "boolean"
+        },
+        "allowAlarmsAndTimers": {
+          "type": "boolean"
+        },
+        "allowDialer": {
+          "type": "boolean"
+        },
+        "allowNotifications": {
+          "type": "boolean"
+        },
+        "assistantLanguage": {
+          "type": "string",
+          "enum": ["bn", "en", "bilingual"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "userId",
+        "masterEnabled",
+        "allowVoiceMic",
+        "allowTtsSpeech",
+        "allowFlashlight",
+        "allowVolumeControl",
+        "allowDisplayAndSettings",
+        "allowAlarmsAndTimers",
+        "allowDialer",
+        "allowNotifications",
+        "assistantLanguage",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DeviceActionLog": {
+      "title": "DeviceActionLog",
+      "description": "Audit log of device actions attempted or executed by Sathi AI.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string"
+        },
+        "actionType": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["EXECUTED", "BLOCKED_PERMISSION", "FAILED"]
+        },
+        "permissionKey": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "actionType", "summary", "status", "permissionKey", "createdAt"]
+    },
+    "ChatMessageRecord": {
+      "title": "ChatMessageRecord",
+      "description": "Persisted conversation message between the user and Sathi AI.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string"
+        },
+        "sender": {
+          "type": "string",
+          "enum": ["USER", "ASSISTANT"]
+        },
+        "text": {
+          "type": "string"
+        },
+        "actionLabel": {
+          "type": "string"
+        },
+        "actionStatus": {
+          "type": "string",
+          "enum": ["NONE", "EXECUTED", "BLOCKED_PERMISSION", "TASK_UPDATED"]
+        },
+        "clientOrder": {
+          "type": "integer"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "sender", "text", "actionLabel", "actionStatus", "clientOrder", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/DailyTask" },
+      "description": "User's personal daily tasks and routines"
+    },
+    "/users/{userId}/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/DevicePermissions" },
+      "description": "User's AI device control permission settings"
+    },
+    "/users/{userId}/actionLogs/{logId}": {
+      "schema": { "$ref": "#/entities/DeviceActionLog" },
+      "description": "Audit trail of AI device actions"
+    },
+    "/users/{userId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessageRecord" },
+      "description": "Conversation history with Sathi AI"
+    }
+  }
+}

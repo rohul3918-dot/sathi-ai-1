@@ -1,0 +1,6 @@
+{
+  "name": "Sathi AI",
+  "description": "ব্যক্তিগত এআই অ্যাসিস্ট্যান্ট — দৈনন্দিন কাজ গুছিয়ে রাখা, কথা বলা এবং নির্বাচিত পারমিশন অনুযায়ী ডিভাইস কন্ট্রোল।",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
