@@ -58,7 +58,9 @@ service cloud.firestore {
              (!('assistantName' in data) || (data.assistantName is string && data.assistantName.size() >= 1 && data.assistantName.size() <= 40)) &&
              (!('conversationStyle' in data) || data.conversationStyle in ['FRIENDLY', 'POLITE', 'CASUAL', 'CONCISE', 'CUSTOM']) &&
              (!('customStylePrompt' in data) || (data.customStylePrompt is string && data.customStylePrompt.size() <= 300)) &&
-             (!('voiceGender' in data) || data.voiceGender in ['FEMALE', 'MALE']);
+             (!('voiceGender' in data) || data.voiceGender in ['FEMALE', 'MALE']) &&
+             (!('voiceLocale' in data) || data.voiceLocale in ['bn-BD', 'bn-IN', 'en-US']) &&
+             (!('selectedModel' in data) || data.selectedModel in ['GEMINI_2_5_FLASH', 'GEMINI_2_5_PRO', 'GEMINI_2_0_FLASH_LITE', 'GEMINI_2_0_FLASH', 'CREATIVE_CHAT']);
     }
 
     function isValidActionLog(data, userId) {
@@ -118,7 +120,7 @@ service cloud.firestore {
                            'allowFlashlight', 'allowVolumeControl', 'allowDisplayAndSettings',
                            'allowAlarmsAndTimers', 'allowDialer', 'allowNotifications',
                            'assistantLanguage', 'assistantName', 'conversationStyle',
-                           'customStylePrompt', 'voiceGender', 'createdAt', 'updatedAt'
+                           'customStylePrompt', 'voiceGender', 'voiceLocale', 'selectedModel', 'createdAt', 'updatedAt'
                          ]) &&
                          isValidPermissions(incoming(), userId) &&
                          isValidTimestamp(incoming().createdAt) &&
@@ -135,7 +137,7 @@ service cloud.firestore {
                            'allowFlashlight', 'allowVolumeControl', 'allowDisplayAndSettings',
                            'allowAlarmsAndTimers', 'allowDialer', 'allowNotifications',
                            'assistantLanguage', 'assistantName', 'conversationStyle',
-                           'customStylePrompt', 'voiceGender', 'updatedAt'
+                           'customStylePrompt', 'voiceGender', 'voiceLocale', 'selectedModel', 'updatedAt'
                          ]);
         allow delete: if isOwner(userId) && isValidId(settingId);
       }

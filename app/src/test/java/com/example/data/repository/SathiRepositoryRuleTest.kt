@@ -64,7 +64,9 @@ class SathiRepositoryRuleTest : FirestoreEmulatorTestBase() {
                     assistantName = "নীরা",
                     conversationStyle = "CUSTOM",
                     customStylePrompt = "সব সময় আদর করে ও সংক্ষেপে কথা বলবে",
-                    voiceGender = "MALE"
+                    voiceGender = "MALE",
+                    voiceLocale = "bn-IN",
+                    selectedModel = "GEMINI_2_5_PRO"
                 )
             )
         }
@@ -77,6 +79,8 @@ class SathiRepositoryRuleTest : FirestoreEmulatorTestBase() {
         assertEquals("নীরা", loaded.assistantName)
         assertEquals("CUSTOM", loaded.conversationStyle)
         assertEquals("MALE", loaded.voiceGender)
+        assertEquals("bn-IN", loaded.voiceLocale)
+        assertEquals("GEMINI_2_5_PRO", loaded.selectedModel)
     }
 
     @Test

@@ -211,7 +211,9 @@ class LocalFallbackSathiDataStore(context: Context) : SathiDataStore {
                 assistantName = o.optString("assistantName", "সাথী").ifBlank { "সাথী" },
                 conversationStyle = o.optString("conversationStyle", "FRIENDLY"),
                 customStylePrompt = o.optString("customStylePrompt", ""),
-                voiceGender = o.optString("voiceGender", "FEMALE")
+                voiceGender = o.optString("voiceGender", "FEMALE"),
+                voiceLocale = o.optString("voiceLocale", "bn-BD"),
+                selectedModel = o.optString("selectedModel", "GEMINI_2_5_FLASH")
             )
         } catch (_: Exception) {
             DevicePermissions(userId = "local")
@@ -235,6 +237,8 @@ class LocalFallbackSathiDataStore(context: Context) : SathiDataStore {
             put("conversationStyle", p.conversationStyle)
             put("customStylePrompt", p.customStylePrompt)
             put("voiceGender", p.voiceGender)
+            put("voiceLocale", p.voiceLocale)
+            put("selectedModel", p.selectedModel)
         }
         prefs.edit().putString(KEY_PERMISSIONS, o.toString()).apply()
     }

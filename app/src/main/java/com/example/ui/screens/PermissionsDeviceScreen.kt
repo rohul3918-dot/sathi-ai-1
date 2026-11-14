@@ -25,20 +25,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Alarm
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.Brightness6
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.FlashlightOn
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.NotificationsActive
-import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Wifi
-import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -62,19 +61,34 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.core.isFirebaseReady
+import com.example.data.model.AiLanguageModel
 import com.example.data.model.DeviceActionLog
 import com.example.ui.SathiViewModel
+import com.example.ui.components.AccountStatusCard
 import com.example.ui.components.AssistantPersonalizationCard
+import com.example.ui.components.ModelOptionRow
+import com.example.ui.components.OnlineApiSetupCard
 import com.example.ui.theme.EmeraldSuccess
 
 @Composable
 fun PermissionsDeviceScreen(
     viewModel: SathiViewModel,
+    isSignedIn: Boolean,
+    userDisplayName: String,
+    userEmail: String?,
+    isSigningIn: Boolean,
+    authErrorMessage: String?,
+    onGoogleSignIn: () -> Unit,
+    onSignOut: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
+    val firebaseReady = remember(context) { isFirebaseReady(context) }
+
     val perms by viewModel.permissionsState.collectAsStateWithLifecycle()
+    val onlineConfig by viewModel.onlineConfigState.collectAsStateWithLifecycle()
     val logs by viewModel.actionLogsState.collectAsStateWithLifecycle()
     val isFlashOn by viewModel.isFlashlightOn.collectAsStateWithLifecycle()
     val volumePct by viewModel.currentVolumePercent.collectAsStateWithLifecycle()
@@ -118,26 +132,151 @@ fun PermissionsDeviceScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .widthIn(max = 760.dp),
-            contentPadding = PaddingValues(top = 8.dp, bottom = 32.dp),
+            contentPadding = PaddingValues(top = 8.dp, bottom = 36.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Assistant Personalization Card (Name, Tone, Voice)
+            // 1. Google Account & Cloud Sync
             item {
-                AssistantPersonalizationCard(
-                    permissions = perms,
-                    onSave = { name, style, customPrompt, voiceGender ->
-                        viewModel.updatePersonalization(name, style, customPrompt, voiceGender)
+                AccountStatusCard(
+                    firebaseReady = firebaseReady,
+                    isSignedIn = isSignedIn,
+                    userDisplayName = userDisplayName,
+                    userEmail = userEmail,
+                    isSigningIn = isSigningIn,
+                    authErrorMessage = authErrorMessage,
+                    onGoogleSignIn = onGoogleSignIn,
+                    onSignOut = onSignOut
+                )
+            }
+
+            // 2. Online Gemini API Key & Endpoint Setup
+            item {
+                OnlineApiSetupCard(
+                    onlineConfig = onlineConfig,
+                    firebaseReady = firebaseReady,
+                    onSaveConfig = { key, endpoint ->
+                        viewModel.saveOnlineApiConfig(key, endpoint)
                     },
-                    onTestVoice = { voiceGender ->
-                        viewModel.testAssistantVoice(voiceGender)
+                    onClearApiKey = {
+                        viewModel.clearOnlineApiKey()
                     }
                 )
             }
 
-            // Master Sovereignty Card
+            // 3. Language Model Selector
             item {
                 Surface(
-                    shape = RoundedCornerShape(24.dp),
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 2.dp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.28f), RoundedCornerShape(20.dp))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.AutoAwesome,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "অনলাইন ল্যাঙ্গুয়েজ মডেল",
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                        }
+                        AiLanguageModel.entries.forEach { model ->
+                            ModelOptionRow(
+                                model = model,
+                                isSelected = perms.selectedModel == model.key,
+                                onClick = { viewModel.selectAiModel(model.key) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 4. Custom AI Name, Style, Male & Female Voice + Test Voice
+            item {
+                AssistantPersonalizationCard(
+                    permissions = perms,
+                    onSave = { name, style, customPrompt, voiceGender, voiceLocale ->
+                        viewModel.updatePersonalization(
+                            assistantName = name,
+                            conversationStyle = style,
+                            customStylePrompt = customPrompt,
+                            voiceGender = voiceGender,
+                            voiceLocale = voiceLocale
+                        )
+                    },
+                    onTestVoice = { voiceGender, voiceLocale ->
+                        viewModel.testAssistantVoice(voiceGender, voiceLocale)
+                    },
+                    onToggleTts = { enabled ->
+                        viewModel.updatePermissions(perms.copy(allowTtsSpeech = enabled))
+                    },
+                    onSelectLanguage = { langCode ->
+                        viewModel.updatePermissions(perms.copy(assistantLanguage = langCode))
+                    }
+                )
+            }
+
+            // 5. Chat Management
+            item {
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("চ্যাট ইতিহাস", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "পূর্ববর্তী কথোপকথন মুছে নতুন চ্যাট শুরু করুন",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.clearChatHistory()
+                                viewModel.showMessage("চ্যাট ইতিহাস পরিষ্কার করা হয়েছে ✨")
+                            },
+                            modifier = Modifier.testTag("settings_clear_chat_button")
+                        ) {
+                            Icon(Icons.Rounded.DeleteSweep, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("মুছুন")
+                        }
+                    }
+                }
+            }
+
+            // 6. Device Control Sovereignty Header
+            item {
+                Text(
+                    text = "ডিভাইস কন্ট্রোল ও পারমিশন",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+
+            item {
+                Surface(
+                    shape = RoundedCornerShape(22.dp),
                     color = if (perms.masterEnabled) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
                     else MaterialTheme.colorScheme.surfaceVariant,
                     modifier = Modifier.fillMaxWidth()
@@ -145,13 +284,13 @@ fun PermissionsDeviceScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(18.dp),
+                            .padding(16.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(48.dp)
-                                .clip(RoundedCornerShape(14.dp))
+                                .size(44.dp)
+                                .clip(RoundedCornerShape(12.dp))
                                 .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
                             contentAlignment = Alignment.Center
                         ) {
@@ -165,8 +304,7 @@ fun PermissionsDeviceScreen(
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = "মাস্টার AI ডিভাইস কন্ট্রোল",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurface
+                                style = MaterialTheme.typography.titleSmall
                             )
                             Text(
                                 text = if (perms.masterEnabled) "সক্রিয় — কেবল আপনার নির্বাচিত সুইচগুলো AI চালাতে পারবে"
@@ -186,53 +324,6 @@ fun PermissionsDeviceScreen(
                 }
             }
 
-            // Language Preference Card
-            item {
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f), RoundedCornerShape(20.dp))
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = "কথোপকথনের ভাষা",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf(
-                                "bilingual" to "বাংলা + English",
-                                "bn" to "শুধু বাংলা",
-                                "en" to "English"
-                            ).forEach { (code, label) ->
-                                FilterChip(
-                                    selected = perms.assistantLanguage == code,
-                                    onClick = {
-                                        viewModel.updatePermissions(perms.copy(assistantLanguage = code))
-                                    },
-                                    label = { Text(label) }
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            item {
-                Text(
-                    text = "ডিভাইস পারমিশন নির্বাচন করুন",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
-            }
-
-            // 1. Voice Microphone
             item {
                 PermissionControlCard(
                     icon = Icons.Rounded.Mic,
@@ -250,22 +341,6 @@ fun PermissionsDeviceScreen(
                 )
             }
 
-            // 2. Voice Reply (TTS)
-            item {
-                PermissionControlCard(
-                    icon = Icons.Rounded.RecordVoiceOver,
-                    title = "ভয়েস উত্তর (Speak Aloud / TTS)",
-                    description = "${perms.assistantName.ifBlank { "সাথী" }} উত্তর দেওয়ার সময় মুখে পড়ে শোনাবে।",
-                    checked = perms.allowTtsSpeech,
-                    masterEnabled = perms.masterEnabled,
-                    testTag = "perm_tts_switch",
-                    onCheckedChange = {
-                        viewModel.updatePermissions(perms.copy(allowTtsSpeech = it))
-                    }
-                )
-            }
-
-            // 3. Flashlight
             item {
                 PermissionControlCard(
                     icon = Icons.Rounded.FlashlightOn,
@@ -299,7 +374,6 @@ fun PermissionsDeviceScreen(
                 )
             }
 
-            // 4. Media Volume
             item {
                 PermissionControlCard(
                     icon = Icons.AutoMirrored.Rounded.VolumeUp,
@@ -332,7 +406,6 @@ fun PermissionsDeviceScreen(
                 )
             }
 
-            // 5. Display & Connectivity
             item {
                 PermissionControlCard(
                     icon = Icons.Rounded.Brightness6,
@@ -385,7 +458,6 @@ fun PermissionsDeviceScreen(
                 )
             }
 
-            // 6. Alarms & Timers
             item {
                 PermissionControlCard(
                     icon = Icons.Rounded.Alarm,
@@ -408,7 +480,6 @@ fun PermissionsDeviceScreen(
                 )
             }
 
-            // 7. Phone Dialer
             item {
                 PermissionControlCard(
                     icon = Icons.Rounded.Call,
@@ -423,7 +494,6 @@ fun PermissionsDeviceScreen(
                 )
             }
 
-            // 8. Notifications & Reminders
             item {
                 PermissionControlCard(
                     icon = Icons.Rounded.NotificationsActive,

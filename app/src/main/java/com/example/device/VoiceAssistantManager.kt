@@ -72,15 +72,29 @@ class VoiceAssistantManager(private val context: Context) {
         }
     }
 
-    fun speak(text: String, voiceGender: String = "FEMALE") {
+    fun speak(
+        text: String,
+        voiceGender: String = "FEMALE",
+        voiceLocale: String = "bn-BD"
+    ) {
         val cleanForSpeech = stripDecorativeEmojis(text)
         if (!ttsReady || cleanForSpeech.isBlank()) return
         try {
             val hasBengali = cleanForSpeech.any { it in '\u0980'..'\u09FF' }
-            val targetLocale = if (hasBengali) Locale.forLanguageTag("bn-BD") else Locale.US
+            val preferredTag = when {
+                voiceLocale.equals("en-US", ignoreCase = true) && !hasBengali -> "en-US"
+                voiceLocale.equals("bn-IN", ignoreCase = true) -> "bn-IN"
+                hasBengali -> "bn-BD"
+                else -> voiceLocale.ifBlank { "en-US" }
+            }
+            val targetLocale = Locale.forLanguageTag(preferredTag)
             val langResult = tts?.setLanguage(targetLocale)
             if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
-                tts?.setLanguage(Locale.US)
+                val fallbackTag = if (preferredTag == "bn-BD") "bn-IN" else "bn-BD"
+                val secondTry = tts?.setLanguage(Locale.forLanguageTag(fallbackTag))
+                if (secondTry == TextToSpeech.LANG_MISSING_DATA || secondTry == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    tts?.setLanguage(Locale.US)
+                }
             }
 
             applyVoiceProfile(targetLocale, voiceGender)
@@ -98,13 +112,19 @@ class VoiceAssistantManager(private val context: Context) {
         }
     }
 
-    fun testVoice(voiceGender: String, assistantName: String) {
-        val sample = if (voiceGender == "MALE") {
-            "হ্যালো, আমি $assistantName। এখন পুরুষ কণ্ঠে কথা বলছি।"
-        } else {
-            "হ্যালো, আমি $assistantName। এখন নারী কণ্ঠে কথা বলছি।"
+    fun testVoice(voiceGender: String, assistantName: String, voiceLocale: String = "bn-BD") {
+        val sample = when {
+            voiceLocale.equals("en-US", ignoreCase = true) -> {
+                if (voiceGender == "MALE") {
+                    "Hello, I am $assistantName. Speaking with the male assistant voice."
+                } else {
+                    "Hello, I am $assistantName. Speaking with the female assistant voice."
+                }
+            }
+            voiceGender == "MALE" -> "হ্যালো, আমি $assistantName। এখন পুরুষ কণ্ঠে কথা বলছি।"
+            else -> "হ্যালো, আমি $assistantName। এখন নারী কণ্ঠে কথা বলছি।"
         }
-        speak(sample, voiceGender)
+        speak(sample, voiceGender, voiceLocale)
     }
 
     private fun applyVoiceProfile(locale: Locale, voiceGender: String) {
@@ -114,11 +134,11 @@ class VoiceAssistantManager(private val context: Context) {
 
         if (matchedVoice != null) {
             engine.voice = matchedVoice
-            engine.setPitch(if (wantMale) 0.90f else 1.08f)
+            engine.setPitch(if (wantMale) 0.88f else 1.08f)
             engine.setSpeechRate(if (wantMale) 0.96f else 1.0f)
         } else {
-            // Fallback pitch tuning guarantees distinct Male vs Female timbre even when device has 1 Bengali voice
-            engine.setPitch(if (wantMale) 0.76f else 1.15f)
+            // Fallback pitch tuning guarantees distinct Male vs Female timbre even when device has 1 voice
+            engine.setPitch(if (wantMale) 0.74f else 1.15f)
             engine.setSpeechRate(if (wantMale) 0.95f else 1.0f)
         }
     }

@@ -117,14 +117,19 @@ test("Authenticated user can manage permissions at settings/permissions only", a
     conversationStyle: "FRIENDLY",
     customStylePrompt: "Be encouraging",
     voiceGender: "FEMALE",
+    voiceLocale: "bn-BD",
+    selectedModel: "GEMINI_2_5_FLASH",
   }));
   await assertSucceeds(permRef.update({
     allowFlashlight: true,
     voiceGender: "MALE",
+    voiceLocale: "bn-IN",
+    selectedModel: "GEMINI_2_5_PRO",
     conversationStyle: "CONCISE",
     updatedAt: new Date(),
   }));
   await assertFails(permRef.update({ voiceGender: "ROBOT", updatedAt: new Date() }));
+  await assertFails(permRef.update({ selectedModel: "UNKNOWN_MODEL", updatedAt: new Date() }));
 
   // Arbitrary doc ID rejected
   await assertFails(aliceDb.collection("users").doc(ALICE_UID).collection("settings").doc("other").set(validPermissionsPayload(ALICE_UID)));

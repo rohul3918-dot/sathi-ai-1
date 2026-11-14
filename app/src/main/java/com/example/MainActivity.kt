@@ -7,12 +7,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -20,22 +17,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.Logout
-import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Checklist
-import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.Checklist
-import androidx.compose.material.icons.rounded.Shield
-import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationRail
-import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -54,9 +46,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.credentials.CredentialManager
 import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
@@ -65,34 +58,33 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.ai.SathiAiEngine
+import com.example.core.OnlineAiConfigStore
 import com.example.core.attemptAutoSignIn
 import com.example.core.configureAppCheck
 import com.example.core.isFirebaseReady
+import com.example.core.onGoogleSignInClicked
 import com.example.core.safeAuthStateFlow
 import com.example.core.safeCurrentUser
 import com.example.core.signOutUser
+import com.example.data.model.AiLanguageModel
 import com.example.data.repository.LocalFallbackSathiDataStore
 import com.example.data.repository.SathiDataStore
 import com.example.data.repository.SathiRepository
 import com.example.device.DeviceControlManager
 import com.example.device.VoiceAssistantManager
 import com.example.ui.SathiViewModel
-import com.example.ui.components.AuthScreen
+import com.example.ui.components.ModelSelectorSheet
 import com.example.ui.screens.AssistantChatScreen
 import com.example.ui.screens.PermissionsDeviceScreen
 import com.example.ui.screens.TasksScreen
+import com.example.ui.theme.EmeraldSuccess
 import com.example.ui.theme.SathiAiTheme
 import com.google.firebase.firestore.FirebaseFirestore
 
-private enum class SathiTab(
-    val labelBn: String,
-    val selectedIcon: ImageVector,
-    val unselectedIcon: ImageVector,
-    val tag: String
-) {
-    ASSISTANT("সাথী চ্যাট", Icons.Rounded.AutoAwesome, Icons.Outlined.AutoAwesome, "tab_assistant"),
-    TASKS("দৈনন্দিন কাজ", Icons.Rounded.Checklist, Icons.Outlined.Checklist, "tab_tasks"),
-    PERMISSIONS("ডিভাইস ও পারমিশন", Icons.Rounded.Tune, Icons.Outlined.Tune, "tab_permissions")
+private enum class SathiRoute {
+    CHAT,
+    TASKS,
+    SETTINGS
 }
 
 class MainActivity : ComponentActivity() {
@@ -119,8 +111,6 @@ fun AppNavigation() {
         safeAuthStateFlow(context)
     }.collectAsStateWithLifecycle(initialValue = remember(firebaseReady) { safeCurrentUser(context) })
 
-    var localModeActive by rememberSaveable { mutableStateOf(false) }
-
     LaunchedEffect(firebaseReady) {
         if (firebaseReady && safeCurrentUser(context) == null) {
             runCatching { CredentialManager.create(context) }.getOrNull()?.let { cm ->
@@ -136,38 +126,19 @@ fun AppNavigation() {
     }
 
     val user = currentUser
-    when {
-        firebaseReady && user != null -> {
-            key(user.uid) {
-                SathiHomeShell(
-                    currentUserId = user.uid,
-                    userDisplayName = user.displayName ?: user.email ?: "ব্যবহারকারী",
-                    isLocalMode = false,
-                    onExitLocalMode = {}
-                )
-            }
-        }
-        !firebaseReady && localModeActive -> {
-            key("local_user") {
-                SathiHomeShell(
-                    currentUserId = "local_user",
-                    userDisplayName = "ব্যক্তিগত লোকাল প্রোফাইল",
-                    isLocalMode = true,
-                    onExitLocalMode = { localModeActive = false }
-                )
-            }
-        }
-        else -> {
-            AuthScreen(
-                onAuthSuccess = {},
-                firebaseConfigured = firebaseReady,
-                onContinueLocalMode = {
-                    if (!firebaseReady) {
-                        localModeActive = true
-                    }
-                }
-            )
-        }
+    val isSignedIn = firebaseReady && user != null
+    val accountKey = if (isSignedIn) user!!.uid else "local_device_profile"
+
+    // Open directly into clean AI chat UI without blocking startup.
+    // Firestore is ONLY accessed when Google Sign-In has completed (isSignedIn == true).
+    key(accountKey) {
+        SathiHomeShell(
+            currentUserId = accountKey,
+            isSignedIn = isSignedIn,
+            userDisplayName = if (isSignedIn) (user?.displayName ?: user?.email ?: "ব্যবহারকারী") else "সাইন-ইন করুন",
+            userEmail = if (isSignedIn) user?.email else null,
+            firebaseReady = firebaseReady
+        )
     }
 }
 
@@ -175,9 +146,10 @@ fun AppNavigation() {
 @Composable
 fun SathiHomeShell(
     currentUserId: String,
+    isSignedIn: Boolean,
     userDisplayName: String,
-    isLocalMode: Boolean,
-    onExitLocalMode: () -> Unit
+    userEmail: String?,
+    firebaseReady: Boolean
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -186,22 +158,24 @@ fun SathiHomeShell(
     }
 
     val viewModel: SathiViewModel = viewModel(
-        key = "${currentUserId}_${isLocalMode}",
+        key = "${currentUserId}_${isSignedIn}",
         factory = viewModelFactory {
             initializer {
                 val app = checkNotNull(this[APPLICATION_KEY]) {
                     "APPLICATION_KEY missing from CreationExtras"
                 }
-                val store: SathiDataStore = if (isLocalMode) {
-                    LocalFallbackSathiDataStore(app)
-                } else {
+                val configStore = OnlineAiConfigStore(app)
+                val store: SathiDataStore = if (isSignedIn && firebaseReady) {
                     val databaseId = app.getString(R.string.firestore_database_id)
                     val db = FirebaseFirestore.getInstance(databaseId)
                     SathiRepository(db)
+                } else {
+                    LocalFallbackSathiDataStore(app)
                 }
                 SathiViewModel(
                     repository = store,
-                    aiEngine = SathiAiEngine(app),
+                    aiEngine = SathiAiEngine(app, configStore),
+                    configStore = configStore,
                     deviceManager = DeviceControlManager(app),
                     voiceManager = VoiceAssistantManager(app),
                     currentUserId = currentUserId
@@ -210,11 +184,62 @@ fun SathiHomeShell(
         }
     )
 
-    var selectedTab by rememberSaveable { mutableStateOf(SathiTab.ASSISTANT) }
+    var currentRoute by rememberSaveable { mutableStateOf(SathiRoute.CHAT) }
+    var showModelSheet by remember { mutableStateOf(false) }
+    var isSigningIn by remember { mutableStateOf(false) }
+    var authErrorMessage by remember { mutableStateOf<String?>(null) }
+
     val permissions by viewModel.permissionsState.collectAsStateWithLifecycle()
     val statusBanner by viewModel.statusBanner.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+
     val aiName = permissions.assistantName.ifBlank { "সাথী" }
+    val activeModel = AiLanguageModel.fromKey(permissions.selectedModel)
+
+    val triggerGoogleSignIn: () -> Unit = {
+        val cm = credentialManager
+        if (!firebaseReady) {
+            authErrorMessage = "এই বিল্ডে google-services.json নেই। Settings থেকে API Key দিয়ে অনলাইন AI চ্যাট ব্যবহার করতে পারবেন।"
+            viewModel.showMessage("Google Sign-In-এর জন্য Firebase (google-services.json) প্রয়োজন।")
+            currentRoute = SathiRoute.SETTINGS
+        } else if (cm == null) {
+            authErrorMessage = "এই ডিভাইসে Credential Manager পাওয়া যায়নি।"
+            viewModel.showMessage("Credential Manager পাওয়া যায়নি।")
+        } else {
+            authErrorMessage = null
+            isSigningIn = true
+            onGoogleSignInClicked(
+                context = context,
+                credentialManager = cm,
+                onAuthSuccess = {
+                    isSigningIn = false
+                    viewModel.showMessage("Google সাইন-ইন সম্পন্ন হয়েছে ✨")
+                },
+                onAuthError = { msg ->
+                    isSigningIn = false
+                    authErrorMessage = msg
+                    viewModel.showMessage(msg)
+                },
+                scope = scope,
+                onAuthCancelled = {
+                    isSigningIn = false
+                }
+            )
+        }
+    }
+
+    val triggerSignOut: () -> Unit = {
+        credentialManager?.let { cm ->
+            signOutUser(
+                context = context,
+                credentialManager = cm,
+                scope = scope,
+                onSignOutComplete = {
+                    viewModel.showMessage("সাইন আউট সম্পন্ন হয়েছে")
+                }
+            )
+        }
+    }
 
     LaunchedEffect(statusBanner) {
         statusBanner?.let {
@@ -223,153 +248,206 @@ fun SathiHomeShell(
         }
     }
 
-    if (selectedTab != SathiTab.ASSISTANT) {
+    if (currentRoute != SathiRoute.CHAT) {
         BackHandler {
-            selectedTab = SathiTab.ASSISTANT
+            currentRoute = SathiRoute.CHAT
         }
     }
 
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val useRail = maxWidth >= 600.dp
+    if (showModelSheet) {
+        ModelSelectorSheet(
+            selectedModelKey = activeModel.key,
+            onSelectModel = { model ->
+                viewModel.selectAiModel(model.key)
+            },
+            onDismiss = { showModelSheet = false }
+        )
+    }
 
-        Scaffold(
-            contentWindowInsets = WindowInsets.safeDrawing,
-            snackbarHost = { SnackbarHost(snackbarHostState) },
-            topBar = {
-                TopAppBar(
-                    title = {
-                        Column {
-                            Text(
-                                text = "$aiName AI",
-                                style = MaterialTheme.typography.titleLarge
-                            )
-                            Text(
-                                text = userDisplayName,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    },
-                    actions = {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = if (permissions.masterEnabled)
-                                MaterialTheme.colorScheme.primaryContainer
-                            else MaterialTheme.colorScheme.surfaceVariant,
-                            onClick = { selectedTab = SathiTab.PERMISSIONS },
-                            modifier = Modifier.padding(end = 4.dp)
-                        ) {
+    Scaffold(
+        contentWindowInsets = WindowInsets.safeDrawing,
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        topBar = {
+            when (currentRoute) {
+                SathiRoute.CHAT -> {
+                    TopAppBar(
+                        title = {
                             Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = aiName,
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+                                    onClick = { showModelSheet = true },
+                                    modifier = Modifier.testTag("active_model_chip")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.AutoAwesome,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Text(
+                                            text = activeModel.shortLabel,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = 1
+                                        )
+                                        Icon(
+                                            imageVector = Icons.Rounded.KeyboardArrowDown,
+                                            contentDescription = "মডেল পরিবর্তন",
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        actions = {
+                            IconButton(
+                                onClick = { currentRoute = SathiRoute.TASKS },
+                                modifier = Modifier.testTag("nav_tasks_button")
                             ) {
                                 Icon(
-                                    imageVector = Icons.Rounded.Shield,
-                                    contentDescription = "পারমিশন স্ট্যাটাস",
-                                    modifier = Modifier.size(15.dp),
-                                    tint = if (permissions.masterEnabled)
-                                        MaterialTheme.colorScheme.onPrimaryContainer
-                                    else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Text(
-                                    text = if (permissions.masterEnabled) "সুরক্ষিত" else "কন্ট্রোল বন্ধ",
-                                    style = MaterialTheme.typography.labelSmall
+                                    imageVector = Icons.Outlined.Checklist,
+                                    contentDescription = "দৈনন্দিন কাজ"
                                 )
                             }
-                        }
-                        IconButton(
-                            onClick = {
-                                if (isLocalMode) {
-                                    onExitLocalMode()
-                                } else if (credentialManager != null) {
-                                    signOutUser(
-                                        context = context,
-                                        credentialManager = credentialManager,
-                                        scope = scope,
-                                        onSignOutComplete = onExitLocalMode
+                            if (isSignedIn) {
+                                IconButton(
+                                    onClick = { currentRoute = SathiRoute.SETTINGS },
+                                    modifier = Modifier.testTag("header_auth_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.AccountCircle,
+                                        contentDescription = "অ্যাকাউন্ট: $userDisplayName",
+                                        tint = EmeraldSuccess
                                     )
                                 }
-                            },
-                            modifier = Modifier.testTag("sign_out_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Rounded.Logout,
-                                contentDescription = "সাইন আউট"
-                            )
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.background
+                            } else {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f),
+                                    onClick = triggerGoogleSignIn,
+                                    modifier = Modifier
+                                        .padding(end = 2.dp)
+                                        .testTag("header_auth_button")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.AccountCircle,
+                                            contentDescription = "Google Sign-In",
+                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Text(
+                                            text = "Sign In",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                                        )
+                                    }
+                                }
+                            }
+                            IconButton(
+                                onClick = { currentRoute = SathiRoute.SETTINGS },
+                                modifier = Modifier.testTag("nav_settings_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Settings,
+                                    contentDescription = "সেটিংস"
+                                )
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.background
+                        )
                     )
-                )
-            },
-            bottomBar = {
-                if (!useRail) {
-                    NavigationBar(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    ) {
-                        SathiTab.entries.forEach { tab ->
-                            val isSelected = selectedTab == tab
-                            val label = if (tab == SathiTab.ASSISTANT) "$aiName চ্যাট" else tab.labelBn
-                            NavigationBarItem(
-                                selected = isSelected,
-                                onClick = { selectedTab = tab },
-                                icon = {
-                                    Icon(
-                                        imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
-                                        contentDescription = label
-                                    )
-                                },
-                                label = { Text(label) },
-                                modifier = Modifier.testTag(tab.tag)
-                            )
-                        }
-                    }
+                }
+                SathiRoute.TASKS -> {
+                    TopAppBar(
+                        navigationIcon = {
+                            IconButton(onClick = { currentRoute = SathiRoute.CHAT }) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                    contentDescription = "চ্যাটে ফিরুন"
+                                )
+                            }
+                        },
+                        title = {
+                            Text("দৈনন্দিন কাজ ও রুটিন", style = MaterialTheme.typography.titleLarge)
+                        },
+                        actions = {
+                            IconButton(onClick = { currentRoute = SathiRoute.SETTINGS }) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Settings,
+                                    contentDescription = "সেটিংস"
+                                )
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.background
+                        )
+                    )
+                }
+                SathiRoute.SETTINGS -> {
+                    TopAppBar(
+                        navigationIcon = {
+                            IconButton(onClick = { currentRoute = SathiRoute.CHAT }) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                    contentDescription = "চ্যাটে ফিরুন"
+                                )
+                            }
+                        },
+                        title = {
+                            Text("সেটিংস ও পারমিশন", style = MaterialTheme.typography.titleLarge)
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.background
+                        )
+                    )
                 }
             }
-        ) { innerPadding ->
-            Row(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-            ) {
-                if (useRail) {
-                    NavigationRail(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        modifier = Modifier.fillMaxHeight()
-                    ) {
-                        Spacer(Modifier.size(12.dp))
-                        SathiTab.entries.forEach { tab ->
-                            val isSelected = selectedTab == tab
-                            val label = if (tab == SathiTab.ASSISTANT) "$aiName চ্যাট" else tab.labelBn
-                            NavigationRailItem(
-                                selected = isSelected,
-                                onClick = { selectedTab = tab },
-                                icon = {
-                                    Icon(
-                                        imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
-                                        contentDescription = label
-                                    )
-                                },
-                                label = { Text(label) },
-                                modifier = Modifier.testTag(tab.tag)
-                            )
-                        }
-                    }
-                    Spacer(Modifier.width(8.dp))
-                }
-
-                Box(modifier = Modifier.weight(1f)) {
-                    when (selectedTab) {
-                        SathiTab.ASSISTANT -> AssistantChatScreen(
-                            viewModel = viewModel,
-                            onNavigateToPermissions = { selectedTab = SathiTab.PERMISSIONS }
-                        )
-                        SathiTab.TASKS -> TasksScreen(viewModel = viewModel)
-                        SathiTab.PERMISSIONS -> PermissionsDeviceScreen(viewModel = viewModel)
-                    }
-                }
+        }
+    ) { innerPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            when (currentRoute) {
+                SathiRoute.CHAT -> AssistantChatScreen(
+                    viewModel = viewModel,
+                    onNavigateToSettings = { currentRoute = SathiRoute.SETTINGS }
+                )
+                SathiRoute.TASKS -> TasksScreen(viewModel = viewModel)
+                SathiRoute.SETTINGS -> PermissionsDeviceScreen(
+                    viewModel = viewModel,
+                    isSignedIn = isSignedIn,
+                    userDisplayName = userDisplayName,
+                    userEmail = userEmail,
+                    isSigningIn = isSigningIn,
+                    authErrorMessage = authErrorMessage,
+                    onGoogleSignIn = triggerGoogleSignIn,
+                    onSignOut = triggerSignOut
+                )
             }
         }
     }

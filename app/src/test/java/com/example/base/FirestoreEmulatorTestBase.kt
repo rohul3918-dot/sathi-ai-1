@@ -40,14 +40,16 @@ abstract class FirestoreEmulatorTestBase {
         )
         databaseId = if (resId != 0) context.getString(resId) else "demo-database"
 
-        val app = if (FirebaseApp.getApps(context).isEmpty()) {
+        val existingApp = FirebaseApp.getApps(context).firstOrNull { it.name == TEST_APP_NAME }
+        val app = if (existingApp == null) {
             val newApp = FirebaseApp.initializeApp(
                 context,
                 FirebaseOptions.Builder()
                     .setApplicationId("com.aistudio.sathiai.qrxmzk")
                     .setProjectId(PROJECT_ID)
                     .setApiKey("fake-api-key-for-emulator")
-                    .build()
+                    .build(),
+                TEST_APP_NAME
             )
             val newFirestore = FirebaseFirestore.getInstance(newApp, databaseId)
             newFirestore.useEmulator(EMULATOR_HOST, FIRESTORE_PORT)
@@ -59,7 +61,7 @@ abstract class FirestoreEmulatorTestBase {
             newAuth.useEmulator(EMULATOR_HOST, AUTH_PORT)
             newApp
         } else {
-            FirebaseApp.getInstance()
+            existingApp
         }
 
         firestore = FirebaseFirestore.getInstance(app, databaseId)
@@ -92,6 +94,7 @@ abstract class FirestoreEmulatorTestBase {
     }
 
     private companion object {
+        const val TEST_APP_NAME = "sathi-emulator-test-app"
         const val EMULATOR_HOST = "127.0.0.1"
         const val FIRESTORE_PORT = 8085
         const val AUTH_PORT = 9099

@@ -85,6 +85,80 @@ enum class VoiceGender(val key: String, val bnLabel: String) {
     }
 }
 
+enum class VoiceLocaleOption(val tag: String, val bnLabel: String) {
+    BN_BD("bn-BD", "বাংলা (BD)"),
+    BN_IN("bn-IN", "বাংলা (IN)"),
+    EN_US("en-US", "English (US)");
+
+    companion object {
+        fun fromTag(tag: String): VoiceLocaleOption =
+            entries.firstOrNull { it.tag.equals(tag, ignoreCase = true) } ?: BN_BD
+    }
+}
+
+enum class AiLanguageModel(
+    val key: String,
+    val apiModelName: String,
+    val displayName: String,
+    val shortLabel: String,
+    val badge: String,
+    val descriptionBn: String,
+    val temperature: Float,
+    val creativeMode: Boolean = false
+) {
+    GEMINI_2_5_FLASH(
+        key = "GEMINI_2_5_FLASH",
+        apiModelName = "gemini-2.5-flash",
+        displayName = "Gemini 2.5 Flash",
+        shortLabel = "2.5 Flash",
+        badge = "Fast & Smart",
+        descriptionBn = "দ্রুত গতি ও বুদ্ধিমান উত্তরের সেরা সমন্বয় (দৈনন্দিন ব্যবহারের জন্য)",
+        temperature = 0.7f
+    ),
+    GEMINI_2_5_PRO(
+        key = "GEMINI_2_5_PRO",
+        apiModelName = "gemini-2.5-pro",
+        displayName = "Gemini 2.5 Pro",
+        shortLabel = "2.5 Pro",
+        badge = "Smart",
+        descriptionBn = "গভীর বিশ্লেষণ, জটিল সমাধান ও বিস্তারিত উত্তরের জন্য উন্নত মডেল",
+        temperature = 0.55f
+    ),
+    GEMINI_2_0_FLASH_LITE(
+        key = "GEMINI_2_0_FLASH_LITE",
+        apiModelName = "gemini-2.0-flash-lite",
+        displayName = "Gemini 2.0 Flash Lite",
+        shortLabel = "2.0 Lite",
+        badge = "Fast",
+        descriptionBn = "অত্যন্ত দ্রুত প্রতিক্রিয়া ও হালকা চ্যাটের জন্য",
+        temperature = 0.65f
+    ),
+    GEMINI_2_0_FLASH(
+        key = "GEMINI_2_0_FLASH",
+        apiModelName = "gemini-2.0-flash",
+        displayName = "Gemini 2.0 Flash",
+        shortLabel = "2.0 Flash",
+        badge = "Balanced",
+        descriptionBn = "সুষম ও নির্ভরযোগ্য সাধারণ কথোপকথন ও কাজের জন্য",
+        temperature = 0.7f
+    ),
+    CREATIVE_CHAT(
+        key = "CREATIVE_CHAT",
+        apiModelName = "gemini-2.5-flash",
+        displayName = "Creative Chat Model",
+        shortLabel = "Creative",
+        badge = "Creative",
+        descriptionBn = "গল্প, কবিতা, আইডিয়া ও প্রাণবন্ত সৃজনশীল আড্ডার জন্য",
+        temperature = 1.0f,
+        creativeMode = true
+    );
+
+    companion object {
+        fun fromKey(key: String): AiLanguageModel =
+            entries.firstOrNull { it.key.equals(key, ignoreCase = true) } ?: GEMINI_2_5_FLASH
+    }
+}
+
 @IgnoreExtraProperties
 data class DevicePermissions(
     @DocumentId val id: String = "permissions",
@@ -103,6 +177,8 @@ data class DevicePermissions(
     val conversationStyle: String = "FRIENDLY",
     val customStylePrompt: String = "",
     val voiceGender: String = "FEMALE",
+    val voiceLocale: String = "bn-BD",
+    val selectedModel: String = "GEMINI_2_5_FLASH",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {

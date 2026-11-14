@@ -6,25 +6,21 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -32,23 +28,22 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
-import androidx.compose.material.icons.automirrored.rounded.VolumeOff
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.TaskAlt
-import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -57,13 +52,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.SuggestionChip
-import androidx.compose.material3.SuggestionChipDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -73,61 +67,56 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.core.isFirebaseReady
+import com.example.data.model.AiLanguageModel
 import com.example.data.model.ChatMessageRecord
 import com.example.data.model.ConversationStyle
-import com.example.data.model.VoiceGender
 import com.example.device.VoiceListeningState
+import com.example.ui.ChatTurnError
 import com.example.ui.PendingPermissionPrompt
 import com.example.ui.SathiViewModel
-import com.example.ui.components.AssistantPersonalizationDialog
 import com.example.ui.theme.EmeraldSuccess
 
 @Composable
 fun AssistantChatScreen(
     viewModel: SathiViewModel,
-    onNavigateToPermissions: () -> Unit,
+    onNavigateToSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
+    val clipboard = LocalClipboardManager.current
+
     val messages by viewModel.messagesState.collectAsStateWithLifecycle()
     val permissions by viewModel.permissionsState.collectAsStateWithLifecycle()
+    val onlineConfig by viewModel.onlineConfigState.collectAsStateWithLifecycle()
     val isThinking by viewModel.isAiThinking.collectAsStateWithLifecycle()
     val listeningState by viewModel.listeningState.collectAsStateWithLifecycle()
-    val aiError by viewModel.aiErrorMessage.collectAsStateWithLifecycle()
+    val turnError by viewModel.chatTurnError.collectAsStateWithLifecycle()
     val pendingPrompt by viewModel.pendingPermissionPrompt.collectAsStateWithLifecycle()
 
     var inputText by remember { mutableStateOf("") }
-    var showCustomizeDialog by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
-    val aiName = permissions.assistantName.ifBlank { "সাথী" }
-    val styleLabel = ConversationStyle.fromKey(permissions.conversationStyle).bnLabel
-    val voiceLabel = VoiceGender.fromKey(permissions.voiceGender).bnLabel
 
-    if (showCustomizeDialog) {
-        AssistantPersonalizationDialog(
-            permissions = permissions,
-            onDismiss = { showCustomizeDialog = false },
-            onSave = { name, style, customPrompt, voiceGender ->
-                viewModel.updatePersonalization(name, style, customPrompt, voiceGender)
-            },
-            onTestVoice = { voiceGender ->
-                viewModel.testAssistantVoice(voiceGender)
-            }
-        )
-    }
+    val aiName = permissions.assistantName.ifBlank { "সাথী" }
+    val activeModel = AiLanguageModel.fromKey(permissions.selectedModel)
+    val styleLabel = ConversationStyle.fromKey(permissions.conversationStyle).bnLabel
+    val firebaseReady = remember(context) { isFirebaseReady(context) }
+    val onlineReady = onlineConfig.hasApiKey || firebaseReady
 
     val micPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -143,44 +132,54 @@ fun AssistantChatScreen(
         viewModel.dismissPermissionPrompt()
     }
 
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.lastIndex)
+    LaunchedEffect(messages.size, isThinking, turnError) {
+        val totalItems = messages.size + (if (isThinking) 1 else 0) + (if (turnError != null) 1 else 0)
+        if (totalItems > 0 && messages.isNotEmpty()) {
+            listState.animateScrollToItem((totalItems - 1).coerceAtLeast(0))
         }
-    }
-
-    val quickPrompts = remember {
-        listOf(
-            "আজকের কাজের রুটিন গুছিয়ে দাও",
-            "সকাল ৭টায় হাঁটার কাজ যোগ করো",
-            "ফ্ল্যাশলাইট চালু করো",
-            "ভলিউম ৬০% করো",
-            "৫ মিনিটের টাইমার সেট করো"
-        )
     }
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(horizontal = 16.dp),
+            .imePadding(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Companion Hero Strip
-        CompanionOrbHeader(
-            assistantName = aiName,
-            styleAndVoiceSummary = "$styleLabel • $voiceLabel",
-            isThinking = isThinking,
-            isListening = listeningState is VoiceListeningState.Listening,
-            ttsEnabled = permissions.allowTtsSpeech,
-            hasMessages = messages.isNotEmpty(),
-            onCustomize = { showCustomizeDialog = true },
-            onToggleTts = {
-                viewModel.updatePermissions(permissions.copy(allowTtsSpeech = !permissions.allowTtsSpeech))
-            },
-            onClearChat = { viewModel.clearChatHistory() }
-        )
+        // Slim API Key prompt only when neither Firebase nor Gemini API Key is set yet
+        AnimatedVisibility(visible = !onlineReady) {
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.78f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 760.dp)
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Key,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "অনলাইন চ্যাটের জন্য Settings-এ Gemini API Key যোগ করুন",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = onNavigateToSettings) {
+                        Text("API Key দিন", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
 
-        // Voice partial listening / error strip
+        // Voice active listening / error indicator
         AnimatedVisibility(visible = listeningState !is VoiceListeningState.Idle) {
             val (bannerText, isErr) = when (val st = listeningState) {
                 is VoiceListeningState.Listening ->
@@ -194,11 +193,11 @@ fun AssistantChatScreen(
                 else MaterialTheme.colorScheme.primaryContainer,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .widthIn(max = 720.dp)
-                    .padding(bottom = 8.dp)
+                    .widthIn(max = 760.dp)
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -221,7 +220,7 @@ fun AssistantChatScreen(
             }
         }
 
-        // Inline permission grant card if user tried a blocked device command
+        // Inline device permission grant banner only when triggered by a blocked device command
         AnimatedVisibility(visible = pendingPrompt != null) {
             pendingPrompt?.let { prompt ->
                 PermissionQuickAllowCard(
@@ -241,54 +240,30 @@ fun AssistantChatScreen(
                     },
                     onOpenSettingsTab = {
                         viewModel.dismissPermissionPrompt()
-                        onNavigateToPermissions()
+                        onNavigateToSettings()
                     },
-                    onDismiss = { viewModel.dismissPermissionPrompt() }
+                    onDismiss = { viewModel.dismissPermissionPrompt() },
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                 )
             }
         }
 
-        AnimatedVisibility(visible = aiError != null) {
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.error.copy(alpha = 0.14f),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 720.dp)
-                    .padding(bottom = 8.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = aiError.orEmpty(),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.weight(1f)
-                    )
-                    TextButton(onClick = { viewModel.dismissAiError() }) {
-                        Text("বন্ধ করুন")
-                    }
-                }
-            }
-        }
-
-        // Conversation Messages
+        // Conversation Feed (clean ChatGPT / Gemini style scrolling upwards)
         LazyColumn(
             state = listState,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .widthIn(max = 720.dp),
-            contentPadding = PaddingValues(vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .widthIn(max = 760.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             if (messages.isEmpty()) {
                 item {
-                    WelcomeAssistantCard(
+                    GeminiEmptyCanvas(
                         assistantName = aiName,
-                        onCustomize = { showCustomizeDialog = true },
+                        modelName = activeModel.displayName,
+                        styleLabel = styleLabel,
                         onPickPrompt = { prompt ->
                             viewModel.sendUserMessage(prompt, activity)
                         }
@@ -296,10 +271,25 @@ fun AssistantChatScreen(
                 }
             } else {
                 items(messages, key = { it.id.ifBlank { it.clientOrder.toString() } }) { message ->
-                    ChatBubbleItem(
-                        message = message,
-                        onOpenPermissions = onNavigateToPermissions
-                    )
+                    if (message.sender == "USER") {
+                        UserChatBubble(message = message)
+                    } else {
+                        AssistantChatBubble(
+                            message = message,
+                            assistantName = aiName,
+                            onCopy = {
+                                clipboard.setText(AnnotatedString(message.text))
+                                viewModel.showMessage("উত্তর কপি করা হয়েছে 📋")
+                            },
+                            onSpeak = {
+                                viewModel.speakMessage(message.text)
+                            },
+                            onRetry = {
+                                viewModel.retryAssistantMessage(message, activity)
+                            },
+                            onOpenPermissions = onNavigateToSettings
+                        )
+                    }
                 }
             }
 
@@ -307,335 +297,239 @@ fun AssistantChatScreen(
                 item {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier.padding(vertical = 6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier.padding(vertical = 8.dp)
                     ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.primary
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(30.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primaryContainer),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                         Text(
-                            text = "$aiName ভাবছে...",
+                            text = "$aiName (${activeModel.shortLabel}) উত্তর লিখছে...",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
             }
-        }
 
-        // Quick Action Suggestion Chips
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .widthIn(max = 720.dp)
-                .horizontalScroll(rememberScrollState())
-                .padding(vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            quickPrompts.forEach { prompt ->
-                SuggestionChip(
-                    onClick = { viewModel.sendUserMessage(prompt, activity) },
-                    label = {
-                        Text(
-                            text = prompt,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    },
-                    colors = SuggestionChipDefaults.suggestionChipColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-                        labelColor = MaterialTheme.colorScheme.onSurface
-                    )
-                )
-            }
-        }
-
-        // Input Composer + Mic
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .widthIn(max = 720.dp)
-                .padding(bottom = 12.dp, top = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            val isListening = listeningState is VoiceListeningState.Listening
-            FilledIconButton(
-                onClick = {
-                    if (isListening) {
-                        viewModel.voiceManager.stopListening()
-                    } else if (viewModel.deviceManager.hasOsPermission(Manifest.permission.RECORD_AUDIO)) {
-                        viewModel.startVoiceInput(activity)
-                    } else {
-                        micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                    }
-                },
-                colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = if (isListening) MaterialTheme.colorScheme.error
-                    else MaterialTheme.colorScheme.secondaryContainer,
-                    contentColor = if (isListening) MaterialTheme.colorScheme.onError
-                    else MaterialTheme.colorScheme.onSecondaryContainer
-                ),
-                modifier = Modifier
-                    .size(50.dp)
-                    .testTag("voice_mic_button")
-            ) {
-                Icon(
-                    imageVector = if (isListening) Icons.Rounded.Stop else Icons.Rounded.Mic,
-                    contentDescription = if (isListening) "ভয়েস বন্ধ করুন" else "ভয়েস দিয়ে বলুন"
-                )
-            }
-
-            OutlinedTextField(
-                value = inputText,
-                onValueChange = { inputText = it },
-                placeholder = {
-                    Text(
-                        text = "$aiName-কে লিখুন বা নির্দেশ দিন...",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                },
-                singleLine = false,
-                maxLines = 3,
-                shape = RoundedCornerShape(22.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
-                    focusedContainerColor = MaterialTheme.colorScheme.surface,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surface
-                ),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(
-                    onSend = {
-                        if (inputText.isNotBlank() && !isThinking) {
-                            val toSend = inputText
-                            inputText = ""
-                            viewModel.sendUserMessage(toSend, activity)
-                        }
-                    }
-                ),
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("chat_message_input")
-            )
-
-            FilledIconButton(
-                onClick = {
-                    val toSend = inputText
-                    inputText = ""
-                    viewModel.sendUserMessage(toSend, activity)
-                },
-                enabled = inputText.isNotBlank() && !isThinking,
-                colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
-                ),
-                modifier = Modifier
-                    .size(50.dp)
-                    .testTag("send_message_button")
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Rounded.Send,
-                    contentDescription = "মেসেজ পাঠান"
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun CompanionOrbHeader(
-    assistantName: String,
-    styleAndVoiceSummary: String,
-    isThinking: Boolean,
-    isListening: Boolean,
-    ttsEnabled: Boolean,
-    hasMessages: Boolean,
-    onCustomize: () -> Unit,
-    onToggleTts: () -> Unit,
-    onClearChat: () -> Unit
-) {
-    val infiniteTransition = rememberInfiniteTransition(label = "orbPulse")
-    val pulseScale by infiniteTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = if (isListening || isThinking) 1.09f else 1.02f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(if (isListening) 650 else 1800),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "scale"
-    )
-
-    Surface(
-        shape = RoundedCornerShape(22.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-        modifier = Modifier
-            .fillMaxWidth()
-            .widthIn(max = 720.dp)
-            .padding(vertical = 8.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(50.dp)
-                    .scale(pulseScale)
-                    .clip(CircleShape)
-                    .border(
-                        1.5.dp,
-                        Brush.linearGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.primary,
-                                MaterialTheme.colorScheme.secondary
-                            )
-                        ),
-                        CircleShape
-                    )
-            ) {
-                Image(
-                    painter = painterResource(id = R.drawable.img_assistant_orb_1794619681366),
-                    contentDescription = "$assistantName Avatar",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-
-            Spacer(Modifier.width(12.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "$assistantName অ্যাসিস্ট্যান্ট",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = when {
-                        isListening -> "আপনার কথা শুনছি..."
-                        isThinking -> "কাজ ও কমান্ড প্রসেস হচ্ছে..."
-                        else -> styleAndVoiceSummary
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            IconButton(
-                onClick = onCustomize,
-                modifier = Modifier.testTag("customize_assistant_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.Tune,
-                    contentDescription = "নাম, ধরন ও ভয়েস কাস্টমাইজ করুন",
-                    tint = MaterialTheme.colorScheme.primary
-                )
-            }
-
-            IconButton(
-                onClick = onToggleTts,
-                modifier = Modifier.testTag("toggle_tts_button")
-            ) {
-                Icon(
-                    imageVector = if (ttsEnabled) Icons.AutoMirrored.Rounded.VolumeUp
-                    else Icons.AutoMirrored.Rounded.VolumeOff,
-                    contentDescription = if (ttsEnabled) "ভয়েস উত্তর চালু আছে" else "ভয়েস উত্তর বন্ধ আছে",
-                    tint = if (ttsEnabled) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            if (hasMessages) {
-                IconButton(
-                    onClick = onClearChat,
-                    modifier = Modifier.testTag("clear_chat_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.DeleteSweep,
-                        contentDescription = "চ্যাট পরিষ্কার করুন",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+            turnError?.let { errorState ->
+                item {
+                    TurnErrorBannerCard(
+                        error = errorState,
+                        onRetry = { viewModel.retryLastFailedTurn(activity) },
+                        onOpenSettings = onNavigateToSettings,
+                        onDismiss = { viewModel.dismissAiError() }
                     )
                 }
             }
         }
-    }
-}
 
-@Composable
-private fun WelcomeAssistantCard(
-    assistantName: String,
-    onCustomize: () -> Unit,
-    onPickPrompt: (String) -> Unit
-) {
-    Surface(
-        shape = RoundedCornerShape(24.dp),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 2.dp,
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(
-                1.dp,
-                MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
-                RoundedCornerShape(24.dp)
-            )
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+        // Clean Bottom Input Bar (Text input + Mic + Send)
+        Surface(
+            shape = RoundedCornerShape(28.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+            tonalElevation = 3.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 760.dp)
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+                .border(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                    shape = RoundedCornerShape(28.dp)
+                )
         ) {
             Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f)
+                TextField(
+                    value = inputText,
+                    onValueChange = { inputText = it },
+                    placeholder = {
+                        Text(
+                            text = "$aiName-কে কিছু জিজ্ঞাসা করুন...",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    singleLine = false,
+                    maxLines = 4,
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        disabledContainerColor = Color.Transparent,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent
+                    ),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(
+                        onSend = {
+                            if (inputText.isNotBlank() && !isThinking) {
+                                val toSend = inputText
+                                inputText = ""
+                                viewModel.sendUserMessage(toSend, activity)
+                            }
+                        }
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("chat_message_input")
+                )
+
+                val isListening = listeningState is VoiceListeningState.Listening
+                IconButton(
+                    onClick = {
+                        if (isListening) {
+                            viewModel.voiceManager.stopListening()
+                        } else if (viewModel.deviceManager.hasOsPermission(Manifest.permission.RECORD_AUDIO)) {
+                            viewModel.startVoiceInput(activity)
+                        } else {
+                            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    },
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("voice_mic_button")
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.AutoAwesome,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Text(
-                        text = "হ্যালো! আমি আপনার ব্যক্তিগত $assistantName 😊✨",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface
+                        imageVector = if (isListening) Icons.Rounded.Stop else Icons.Rounded.Mic,
+                        contentDescription = if (isListening) "ভয়েস বন্ধ করুন" else "ভয়েস দিয়ে বলুন",
+                        tint = if (isListening) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                TextButton(onClick = onCustomize) {
-                    Text("কাস্টমাইজ")
+
+                FilledIconButton(
+                    onClick = {
+                        val toSend = inputText
+                        inputText = ""
+                        viewModel.sendUserMessage(toSend, activity)
+                    },
+                    enabled = inputText.isNotBlank() && !isThinking,
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ),
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("send_message_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.Send,
+                        contentDescription = "মেসেজ পাঠান"
+                    )
                 }
             }
-            Text(
-                text = "আপনি আমাকে বাংলা বা ইংরেজিতে বলতে পারেন—আমি আপনার কাজ লিখে রাখব, দিন সাজিয়ে দেব এবং আপনার দেওয়া পারমিশন অনুযায়ী ফ্ল্যাশলাইট, ভলিউম, অ্যালার্ম বা সেটিংস কন্ট্রোল করব।",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(
-                    "সন্ধ্যা ৬টায় ওষুধ খাওয়ার কাজ যোগ করো",
-                    "মিডিয়া ভলিউম ৫০% করে দাও",
-                    "আমার আজকের কাজগুলো গুছিয়ে বলো"
-                ).forEach { example ->
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onPickPrompt(example) }
-                    ) {
-                        Text(
-                            text = "“$example”",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun GeminiEmptyCanvas(
+    assistantName: String,
+    modelName: String,
+    styleLabel: String,
+    onPickPrompt: (String) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 36.dp, bottom = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(72.dp)
+                .clip(CircleShape)
+                .border(
+                    width = 1.5.dp,
+                    brush = Brush.linearGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.primary,
+                            MaterialTheme.colorScheme.secondary
                         )
-                    }
+                    ),
+                    shape = CircleShape
+                )
+        ) {
+            Image(
+                painter = painterResource(id = R.drawable.img_assistant_orb_1794619681366),
+                contentDescription = "$assistantName Avatar",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = "হ্যালো! আমি $assistantName ✨",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground,
+                textAlign = TextAlign.Center
+            )
+            Text(
+                text = "$modelName • $styleLabel",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Text(
+                text = "আপনি আমাকে যেকোনো প্রশ্ন করতে পারেন, দৈনন্দিন কাজ গোছাতে পারেন অথবা অনুমতি দিয়ে ডিভাইস কন্ট্রোল করতে পারেন।",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 12.dp)
+            )
+        }
+
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            listOf(
+                "আজকের দিনটি কীভাবে শুরু করা যায়? 🌟",
+                "সন্ধ্যা ৬টায় ওষুধ খাওয়ার কাজ যোগ করো 📋",
+                "ফ্ল্যাশলাইট চালু করো 🔦",
+                "আমাকে একটি ছোট অনুপ্রেরণার গল্প বলো ✨"
+            ).forEach { starter ->
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    modifier = Modifier
+                        .border(
+                            1.dp,
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.25f),
+                            RoundedCornerShape(16.dp)
+                        )
+                        .clickable { onPickPrompt(starter) }
+                ) {
+                    Text(
+                        text = starter,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                    )
                 }
             }
         }
@@ -643,88 +537,203 @@ private fun WelcomeAssistantCard(
 }
 
 @Composable
-private fun ChatBubbleItem(
-    message: ChatMessageRecord,
-    onOpenPermissions: () -> Unit
-) {
-    val isUser = message.sender == "USER"
+private fun UserChatBubble(message: ChatMessageRecord) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
+        horizontalArrangement = Arrangement.End
+    ) {
+        Surface(
+            shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 6.dp),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            modifier = Modifier.widthIn(max = 520.dp)
+        ) {
+            Text(
+                text = message.text,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun AssistantChatBubble(
+    message: ChatMessageRecord,
+    assistantName: String,
+    onCopy: () -> Unit,
+    onSpeak: () -> Unit,
+    onRetry: () -> Unit,
+    onOpenPermissions: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Start,
+        verticalAlignment = Alignment.Top
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(top = 4.dp)
+                .size(30.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.AutoAwesome,
+                contentDescription = assistantName,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = message.text,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+
+            if (message.actionLabel.isNotBlank() && message.actionStatus != "NONE") {
+                val (badgeBg, badgeFg, badgeIcon) = when (message.actionStatus) {
+                    "EXECUTED" -> Triple(
+                        EmeraldSuccess.copy(alpha = 0.16f),
+                        EmeraldSuccess,
+                        Icons.Rounded.CheckCircle
+                    )
+                    "TASK_UPDATED" -> Triple(
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                        MaterialTheme.colorScheme.primary,
+                        Icons.Rounded.TaskAlt
+                    )
+                    else -> Triple(
+                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.18f),
+                        MaterialTheme.colorScheme.secondary,
+                        Icons.Rounded.Lock
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = badgeBg,
+                    modifier = Modifier.then(
+                        if (message.actionStatus == "BLOCKED_PERMISSION") {
+                            Modifier.clickable { onOpenPermissions() }
+                        } else Modifier
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = badgeIcon,
+                            contentDescription = null,
+                            tint = badgeFg,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = message.actionLabel,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = badgeFg
+                        )
+                    }
+                }
+            }
+
+            // Copy, Speak & Retry action row (like Gemini / ChatGPT)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                IconButton(
+                    onClick = onCopy,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .testTag("copy_reply_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.ContentCopy,
+                        contentDescription = "কপি করুন",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(17.dp)
+                    )
+                }
+                IconButton(
+                    onClick = onSpeak,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .testTag("speak_reply_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.VolumeUp,
+                        contentDescription = "পড়ে শোনান",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                IconButton(
+                    onClick = onRetry,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .testTag("retry_reply_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Refresh,
+                        contentDescription = "পুনরায় উত্তর নিন",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TurnErrorBannerCard(
+    error: ChatTurnError,
+    onRetry: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.3f), RoundedCornerShape(16.dp))
     ) {
         Column(
-            modifier = Modifier.widthIn(max = 520.dp),
-            horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Surface(
-                shape = RoundedCornerShape(
-                    topStart = 20.dp,
-                    topEnd = 20.dp,
-                    bottomStart = if (isUser) 20.dp else 6.dp,
-                    bottomEnd = if (isUser) 6.dp else 20.dp
-                ),
-                color = if (isUser) MaterialTheme.colorScheme.primaryContainer
-                else MaterialTheme.colorScheme.surfaceVariant,
-                tonalElevation = if (isUser) 2.dp else 1.dp
-            ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+            Text(
+                text = error.message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = onRetry,
+                    modifier = Modifier.testTag("error_retry_button")
                 ) {
-                    Text(
-                        text = message.text,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = if (isUser) MaterialTheme.colorScheme.onPrimaryContainer
-                        else MaterialTheme.colorScheme.onSurface
-                    )
-
-                    if (message.actionLabel.isNotBlank() && message.actionStatus != "NONE") {
-                        val (badgeBg, badgeFg, badgeIcon) = when (message.actionStatus) {
-                            "EXECUTED" -> Triple(
-                                EmeraldSuccess.copy(alpha = 0.16f),
-                                EmeraldSuccess,
-                                Icons.Rounded.CheckCircle
-                            )
-                            "TASK_UPDATED" -> Triple(
-                                MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                                MaterialTheme.colorScheme.primary,
-                                Icons.Rounded.TaskAlt
-                            )
-                            else -> Triple(
-                                MaterialTheme.colorScheme.secondary.copy(alpha = 0.18f),
-                                MaterialTheme.colorScheme.secondary,
-                                Icons.Rounded.Lock
-                            )
-                        }
-
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = badgeBg,
-                            modifier = Modifier.then(
-                                if (message.actionStatus == "BLOCKED_PERMISSION") {
-                                    Modifier.clickable { onOpenPermissions() }
-                                } else Modifier
-                            )
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Icon(
-                                    imageVector = badgeIcon,
-                                    contentDescription = null,
-                                    tint = badgeFg,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Text(
-                                    text = message.actionLabel,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = badgeFg
-                                )
-                            }
-                        }
+                    Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("আবার চেষ্টা করুন")
+                }
+                if (error.missingConfig) {
+                    Button(onClick = onOpenSettings) {
+                        Text("Settings খুলুন")
                     }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("বন্ধ")
                 }
             }
         }
@@ -736,15 +745,15 @@ private fun PermissionQuickAllowCard(
     prompt: PendingPermissionPrompt,
     onAllowClick: () -> Unit,
     onOpenSettingsTab: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.secondaryContainer,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .widthIn(max = 720.dp)
-            .padding(bottom = 8.dp)
+            .widthIn(max = 760.dp)
     ) {
         Column(
             modifier = Modifier.padding(14.dp),
@@ -766,9 +775,7 @@ private fun PermissionQuickAllowCard(
                     fontWeight = FontWeight.Bold
                 )
             }
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
                     onClick = onAllowClick,
                     colors = ButtonDefaults.buttonColors(
@@ -780,7 +787,7 @@ private fun PermissionQuickAllowCard(
                     Text("অনুমতি দিন")
                 }
                 TextButton(onClick = onOpenSettingsTab) {
-                    Text("সব পারমিশন দেখুন")
+                    Text("Settings দেখুন")
                 }
                 TextButton(onClick = onDismiss) {
                     Text("পরে")

@@ -208,12 +208,24 @@ class SathiRepository(private val db: FirebaseFirestore) : SathiDataStore {
         } ?: "FRIENDLY"
         val cleanCustomPrompt = permissions.customStylePrompt.trim().take(300)
         val cleanVoiceGender = permissions.voiceGender.takeIf { it in setOf("FEMALE", "MALE") } ?: "FEMALE"
+        val cleanVoiceLocale = permissions.voiceLocale.takeIf { it in setOf("bn-BD", "bn-IN", "en-US") } ?: "bn-BD"
+        val cleanModel = permissions.selectedModel.takeIf {
+            it in setOf(
+                "GEMINI_2_5_FLASH",
+                "GEMINI_2_5_PRO",
+                "GEMINI_2_0_FLASH_LITE",
+                "GEMINI_2_0_FLASH",
+                "CREATIVE_CHAT"
+            )
+        } ?: "GEMINI_2_5_FLASH"
         val sanitized = permissions.copy(
             userId = userId,
             assistantName = cleanName,
             conversationStyle = cleanStyle,
             customStylePrompt = cleanCustomPrompt,
-            voiceGender = cleanVoiceGender
+            voiceGender = cleanVoiceGender,
+            voiceLocale = cleanVoiceLocale,
+            selectedModel = cleanModel
         )
         return try {
             val docExists = sanitized.createdAt != null || docRef.get().await().exists()
@@ -234,6 +246,8 @@ class SathiRepository(private val db: FirebaseFirestore) : SathiDataStore {
                     "conversationStyle" to sanitized.conversationStyle,
                     "customStylePrompt" to sanitized.customStylePrompt,
                     "voiceGender" to sanitized.voiceGender,
+                    "voiceLocale" to sanitized.voiceLocale,
+                    "selectedModel" to sanitized.selectedModel,
                     "createdAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
@@ -254,6 +268,8 @@ class SathiRepository(private val db: FirebaseFirestore) : SathiDataStore {
                     "conversationStyle" to sanitized.conversationStyle,
                     "customStylePrompt" to sanitized.customStylePrompt,
                     "voiceGender" to sanitized.voiceGender,
+                    "voiceLocale" to sanitized.voiceLocale,
+                    "selectedModel" to sanitized.selectedModel,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
                 docRef.update(updatePayload).await()

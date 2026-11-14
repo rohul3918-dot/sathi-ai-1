@@ -37,6 +37,8 @@
         "conversationStyle": { "type": "string", "enum": ["FRIENDLY", "POLITE", "CASUAL", "CONCISE", "CUSTOM"] },
         "customStylePrompt": { "type": "string" },
         "voiceGender": { "type": "string", "enum": ["FEMALE", "MALE"] },
+        "voiceLocale": { "type": "string", "enum": ["bn-BD", "bn-IN", "en-US"] },
+        "selectedModel": { "type": "string", "enum": ["GEMINI_2_5_FLASH", "GEMINI_2_5_PRO", "GEMINI_2_0_FLASH_LITE", "GEMINI_2_0_FLASH", "CREATIVE_CHAT"] },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },

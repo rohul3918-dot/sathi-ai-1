@@ -6,7 +6,11 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.ai.AiAssistantDirective
+import com.example.ai.MissingOnlineAiConfigException
 import com.example.ai.SathiAiEngine
+import com.example.core.OnlineAiConfig
+import com.example.core.OnlineAiConfigStore
+import com.example.data.model.AiLanguageModel
 import com.example.data.model.ChatMessageRecord
 import com.example.data.model.DailyTask
 import com.example.data.model.DeviceActionLog
@@ -39,13 +43,22 @@ data class PendingPermissionPrompt(
     val osPermission: String? = null
 )
 
+data class ChatTurnError(
+    val message: String,
+    val failedPrompt: String,
+    val missingConfig: Boolean = false
+)
+
 class SathiViewModel(
     private val repository: SathiDataStore,
     private val aiEngine: SathiAiEngine,
+    private val configStore: OnlineAiConfigStore,
     val deviceManager: DeviceControlManager,
     val voiceManager: VoiceAssistantManager,
     private val currentUserId: String
 ) : ViewModel() {
+
+    val onlineConfigState: StateFlow<OnlineAiConfig> = configStore.config
 
     val tasksState: StateFlow<DataUiState<List<DailyTask>>> =
         repository.observeTasks(currentUserId)
@@ -100,8 +113,8 @@ class SathiViewModel(
     private val _isAiThinking = MutableStateFlow(false)
     val isAiThinking: StateFlow<Boolean> = _isAiThinking.asStateFlow()
 
-    private val _aiErrorMessage = MutableStateFlow<String?>(null)
-    val aiErrorMessage: StateFlow<String?> = _aiErrorMessage.asStateFlow()
+    private val _chatTurnError = MutableStateFlow<ChatTurnError?>(null)
+    val chatTurnError: StateFlow<ChatTurnError?> = _chatTurnError.asStateFlow()
 
     private val _smartPlanText = MutableStateFlow<String?>(null)
     val smartPlanText: StateFlow<String?> = _smartPlanText.asStateFlow()
@@ -115,34 +128,46 @@ class SathiViewModel(
     private val _statusBanner = MutableStateFlow<String?>(null)
     val statusBanner: StateFlow<String?> = _statusBanner.asStateFlow()
 
+    fun isOnlineConfigured(): Boolean = configStore.isOnlineAiConfigured()
+
+    fun showMessage(msg: String) {
+        _statusBanner.value = msg
+    }
+
     fun dismissBanner() {
         _statusBanner.value = null
     }
 
     fun dismissAiError() {
-        _aiErrorMessage.value = null
+        _chatTurnError.value = null
     }
 
     fun dismissPermissionPrompt() {
         _pendingPermissionPrompt.value = null
     }
 
-    fun sendUserMessage(rawText: String, activity: Activity?) {
+    fun sendUserMessage(
+        rawText: String,
+        activity: Activity?,
+        skipAddingUserBubble: Boolean = false
+    ) {
         val cleanText = rawText.trim()
         if (cleanText.isEmpty() || _isAiThinking.value) return
 
         viewModelScope.launch {
             _isAiThinking.value = true
-            _aiErrorMessage.value = null
+            _chatTurnError.value = null
             _pendingPermissionPrompt.value = null
             val baseOrder = System.currentTimeMillis()
 
-            repository.addMessage(
-                userId = currentUserId,
-                sender = "USER",
-                text = cleanText,
-                clientOrder = baseOrder
-            )
+            if (!skipAddingUserBubble) {
+                repository.addMessage(
+                    userId = currentUserId,
+                    sender = "USER",
+                    text = cleanText,
+                    clientOrder = baseOrder
+                )
+            }
 
             val currentTasks = (tasksState.value as? DataUiState.Success)?.data ?: emptyList()
             val currentPerms = permissionsState.value
@@ -172,23 +197,43 @@ class SathiViewModel(
                         clientOrder = baseOrder + 1
                     )
                     if (currentPerms.allowTtsSpeech) {
-                        voiceManager.speak(finalReply, currentPerms.voiceGender)
+                        voiceManager.speak(finalReply, currentPerms.voiceGender, currentPerms.voiceLocale)
                     }
                 },
                 onFailure = { err ->
-                    val message = err.localizedMessage ?: "AI অ্যাসিস্ট্যান্টের সাথে সংযোগ ব্যর্থ হয়েছে।"
-                    _aiErrorMessage.value = message
-                    repository.addMessage(
-                        userId = currentUserId,
-                        sender = "ASSISTANT",
-                        text = "দুঃখিত, এই মুহূর্তে উত্তর দেওয়া যাচ্ছে না: $message",
-                        actionStatus = "NONE",
-                        clientOrder = baseOrder + 1
+                    val message = err.localizedMessage ?: "অনলাইন AI এর সাথে সংযোগ ব্যর্থ হয়েছে।"
+                    _chatTurnError.value = ChatTurnError(
+                        message = message,
+                        failedPrompt = cleanText,
+                        missingConfig = err is MissingOnlineAiConfigException
                     )
                 }
             )
             _isAiThinking.value = false
         }
+    }
+
+    fun retryAssistantMessage(assistantMessage: ChatMessageRecord, activity: Activity?) {
+        val list = messagesState.value
+        val idx = list.indexOfFirst { it.id == assistantMessage.id && it.clientOrder == assistantMessage.clientOrder }
+        val precedingUserPrompt = if (idx > 0) {
+            list.subList(0, idx).lastOrNull { it.sender == "USER" }?.text
+        } else {
+            list.lastOrNull { it.sender == "USER" }?.text
+        }
+        if (!precedingUserPrompt.isNullOrBlank()) {
+            sendUserMessage(precedingUserPrompt, activity, skipAddingUserBubble = true)
+        }
+    }
+
+    fun retryLastFailedTurn(activity: Activity?) {
+        val failed = _chatTurnError.value?.failedPrompt ?: return
+        sendUserMessage(failed, activity, skipAddingUserBubble = true)
+    }
+
+    fun speakMessage(text: String) {
+        val perms = permissionsState.value
+        voiceManager.speak(text, perms.voiceGender, perms.voiceLocale)
     }
 
     private suspend fun executeDirective(
@@ -350,7 +395,7 @@ class SathiViewModel(
                 permissionKey = if (!permissions.masterEnabled) "masterEnabled" else permissionKey,
                 titleBn = if (!permissions.masterEnabled) "মাস্টার ডিভাইস কন্ট্রোল" else permissionLabelBn
             )
-            val overrideReply = "আপনার সেফটি সেটিংস অনুযায়ী '$permissionLabelBn' অনুমতি এখন বন্ধ আছে। আপনি চাইলে নিচের বাটনে ট্যাপ করে অথবা 'পারমিশন' ট্যাব থেকে এটি চালু করতে পারেন।"
+            val overrideReply = "আপনার সেফটি সেটিংস অনুযায়ী '$permissionLabelBn' অনুমতি এখন বন্ধ আছে। আপনি চাইলে নিচের বাটনে ট্যাপ করে অথবা Settings থেকে এটি চালু করতে পারেন।"
             return Triple("অনুমতি প্রয়োজন: $permissionLabelBn", "BLOCKED_PERMISSION", overrideReply)
         }
 
@@ -393,11 +438,39 @@ class SathiViewModel(
         _statusBanner.value = "পারমিশন আপডেট করা হয়েছে।"
     }
 
+    fun selectAiModel(modelKey: String) {
+        val model = AiLanguageModel.fromKey(modelKey)
+        val updated = permissionsState.value.copy(selectedModel = model.key)
+        viewModelScope.launch {
+            val res = repository.savePermissions(currentUserId, updated)
+            if (res.isSuccess) {
+                _statusBanner.value = "মডেল নির্বাচিত হয়েছে: ${model.displayName} ✨"
+            } else {
+                _statusBanner.value = "মডেল পরিবর্তন সংরক্ষণ করা যায়নি।"
+            }
+        }
+    }
+
+    fun saveOnlineApiConfig(apiKey: String, endpoint: String) {
+        configStore.saveConfig(apiKey, endpoint)
+        _chatTurnError.value = null
+        _statusBanner.value = if (apiKey.trim().isNotBlank()) {
+            "অনলাইন Gemini API Key সংরক্ষিত হয়েছে 🔑✨"
+        } else {
+            "অনলাইন API সেটিংস আপডেট হয়েছে।"
+        }
+    }
+
+    fun clearOnlineApiKey() {
+        configStore.clearUserApiKey()
+        _statusBanner.value = "সংরক্ষিত API Key মুছে ফেলা হয়েছে।"
+    }
+
     fun updatePermissions(updated: DevicePermissions) {
         viewModelScope.launch {
             val res = repository.savePermissions(currentUserId, updated)
             if (res.isFailure) {
-                _statusBanner.value = "পারমিশন সংরক্ষণ করা যায়নি।"
+                _statusBanner.value = "সেটিংস সংরক্ষণ করা যায়নি।"
             }
         }
     }
@@ -406,7 +479,9 @@ class SathiViewModel(
         assistantName: String,
         conversationStyle: String,
         customStylePrompt: String,
-        voiceGender: String
+        voiceGender: String,
+        voiceLocale: String,
+        selectedModel: String = permissionsState.value.selectedModel
     ) {
         val current = permissionsState.value
         val cleanName = assistantName.trim().ifBlank { "সাথী" }.take(40)
@@ -414,7 +489,9 @@ class SathiViewModel(
             assistantName = cleanName,
             conversationStyle = conversationStyle,
             customStylePrompt = customStylePrompt.trim().take(300),
-            voiceGender = voiceGender
+            voiceGender = voiceGender,
+            voiceLocale = voiceLocale,
+            selectedModel = selectedModel
         )
         viewModelScope.launch {
             val res = repository.savePermissions(currentUserId, updated)
@@ -426,9 +503,12 @@ class SathiViewModel(
         }
     }
 
-    fun testAssistantVoice(voiceGender: String) {
+    fun testAssistantVoice(
+        voiceGender: String,
+        voiceLocale: String = permissionsState.value.voiceLocale
+    ) {
         val aiName = permissionsState.value.assistantName.ifBlank { "সাথী" }
-        voiceManager.testVoice(voiceGender, aiName)
+        voiceManager.testVoice(voiceGender, aiName, voiceLocale)
     }
 
     fun addOrUpdateTask(
@@ -493,6 +573,7 @@ class SathiViewModel(
     fun clearChatHistory() {
         viewModelScope.launch {
             repository.clearMessages(currentUserId)
+            _chatTurnError.value = null
         }
     }
 
@@ -539,7 +620,11 @@ class SathiViewModel(
             _statusBanner.value = "ভয়েস ব্যবহারের জন্য মাইক্রোফোন পারমিশন চালু করুন।"
             return
         }
-        voiceManager.startListening(perms.assistantLanguage) { recognized ->
+        val langForStt = when (perms.voiceLocale) {
+            "en-US" -> "en"
+            else -> perms.assistantLanguage
+        }
+        voiceManager.startListening(langForStt) { recognized ->
             sendUserMessage(recognized, activity)
         }
     }
