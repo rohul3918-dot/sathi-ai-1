@@ -108,43 +108,43 @@ enum class AiLanguageModel(
 ) {
     GEMINI_2_5_FLASH(
         key = "GEMINI_2_5_FLASH",
-        apiModelName = "gemini-2.5-flash",
-        displayName = "Gemini 2.5 Flash",
-        shortLabel = "2.5 Flash",
+        apiModelName = "gemini-3.8-flash",
+        displayName = "Gemini 3.8 Flash",
+        shortLabel = "3.8 Flash",
         badge = "Fast & Smart",
         descriptionBn = "দ্রুত গতি ও বুদ্ধিমান উত্তরের সেরা সমন্বয় (দৈনন্দিন ব্যবহারের জন্য)",
         temperature = 0.7f
     ),
     GEMINI_2_5_PRO(
         key = "GEMINI_2_5_PRO",
-        apiModelName = "gemini-2.5-pro",
-        displayName = "Gemini 2.5 Pro",
-        shortLabel = "2.5 Pro",
+        apiModelName = "gemini-3.8-flash",
+        displayName = "Gemini 3.8 Flash Pro",
+        shortLabel = "3.8 Pro",
         badge = "Smart",
         descriptionBn = "গভীর বিশ্লেষণ, জটিল সমাধান ও বিস্তারিত উত্তরের জন্য উন্নত মডেল",
         temperature = 0.55f
     ),
     GEMINI_2_0_FLASH_LITE(
         key = "GEMINI_2_0_FLASH_LITE",
-        apiModelName = "gemini-2.0-flash-lite",
-        displayName = "Gemini 2.0 Flash Lite",
-        shortLabel = "2.0 Lite",
+        apiModelName = "gemini-3.8-flash",
+        displayName = "Gemini 3.8 Flash Lite",
+        shortLabel = "3.8 Lite",
         badge = "Fast",
         descriptionBn = "অত্যন্ত দ্রুত প্রতিক্রিয়া ও হালকা চ্যাটের জন্য",
         temperature = 0.65f
     ),
     GEMINI_2_0_FLASH(
         key = "GEMINI_2_0_FLASH",
-        apiModelName = "gemini-2.0-flash",
-        displayName = "Gemini 2.0 Flash",
-        shortLabel = "2.0 Flash",
+        apiModelName = "gemini-3.8-flash",
+        displayName = "Gemini 3.8 Flash",
+        shortLabel = "3.8 Flash",
         badge = "Balanced",
         descriptionBn = "সুষম ও নির্ভরযোগ্য সাধারণ কথোপকথন ও কাজের জন্য",
         temperature = 0.7f
     ),
     CREATIVE_CHAT(
         key = "CREATIVE_CHAT",
-        apiModelName = "gemini-2.5-flash",
+        apiModelName = "gemini-3.8-flash",
         displayName = "Creative Chat Model",
         shortLabel = "Creative",
         badge = "Creative",
