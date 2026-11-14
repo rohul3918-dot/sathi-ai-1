@@ -42,6 +42,49 @@ enum class TaskPriority(val key: String, val bnLabel: String, val enLabel: Strin
     }
 }
 
+enum class ConversationStyle(val key: String, val bnLabel: String, val instruction: String) {
+    FRIENDLY(
+        "FRIENDLY",
+        "বন্ধুত্বপূর্ণ",
+        "Speak warmly, cheerfully, and encouragingly like a caring close companion."
+    ),
+    POLITE(
+        "POLITE",
+        "ভদ্র ও মার্জিত",
+        "Speak respectfully and politely (use 'আপনি' in Bengali), calm and courteous."
+    ),
+    CASUAL(
+        "CASUAL",
+        "সহজ ও ঘরোয়া",
+        "Speak naturally and casually (use warm 'তুমি' in Bengali), relaxed and conversational."
+    ),
+    CONCISE(
+        "CONCISE",
+        "সংক্ষিপ্ত ও দ্রুত",
+        "Keep answers crisp, ultra-short, and direct (1-2 sentences max) while staying pleasant."
+    ),
+    CUSTOM(
+        "CUSTOM",
+        "কাস্টম স্টাইল",
+        "Follow the user's custom style instructions carefully."
+    );
+
+    companion object {
+        fun fromKey(key: String): ConversationStyle =
+            entries.firstOrNull { it.key.equals(key, ignoreCase = true) } ?: FRIENDLY
+    }
+}
+
+enum class VoiceGender(val key: String, val bnLabel: String) {
+    FEMALE("FEMALE", "নারী কণ্ঠ (Female)"),
+    MALE("MALE", "পুরুষ কণ্ঠ (Male)");
+
+    companion object {
+        fun fromKey(key: String): VoiceGender =
+            entries.firstOrNull { it.key.equals(key, ignoreCase = true) } ?: FEMALE
+    }
+}
+
 @IgnoreExtraProperties
 data class DevicePermissions(
     @DocumentId val id: String = "permissions",
@@ -56,6 +99,10 @@ data class DevicePermissions(
     val allowDialer: Boolean = false,
     val allowNotifications: Boolean = true,
     val assistantLanguage: String = "bilingual",
+    val assistantName: String = "সাথী",
+    val conversationStyle: String = "FRIENDLY",
+    val customStylePrompt: String = "",
+    val voiceGender: String = "FEMALE",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {

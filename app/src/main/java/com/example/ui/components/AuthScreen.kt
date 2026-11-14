@@ -32,6 +32,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -44,7 +45,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -59,11 +59,15 @@ import com.example.core.onGoogleSignInClicked
 
 @Composable
 fun AuthScreen(
-    onAuthSuccess: () -> Unit
+    onAuthSuccess: () -> Unit,
+    firebaseConfigured: Boolean = true,
+    onContinueLocalMode: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val credentialManager = remember(context) { CredentialManager.create(context) }
+    val credentialManager = remember(context) {
+        runCatching { CredentialManager.create(context) }.getOrNull()
+    }
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
@@ -146,12 +150,12 @@ fun AuthScreen(
                     FeatureRow(
                         icon = Icons.Rounded.CheckCircle,
                         title = "দৈনন্দিন কাজ ও রুটিন",
-                        subtitle = "কাজ যোগ, সময় সাজানো এবং ক্লাউড সিঙ্ক"
+                        subtitle = "কাজ যোগ, সময় সাজানো এবং সুরক্ষিত সংরক্ষণ"
                     )
                     FeatureRow(
                         icon = Icons.Rounded.Mic,
-                        title = "কথা বলার ক্ষমতা (বাংলা ও English)",
-                        subtitle = "ভয়েস ও চ্যাটে স্বাভাবিক কথোপকথন"
+                        title = "কাস্টম নাম, স্টাইল ও নারী/পুরুষ কণ্ঠ",
+                        subtitle = "নিজের পছন্দমতো এআই-এর নাম, কথা বলার ধরন ও ভয়েস"
                     )
                     FeatureRow(
                         icon = Icons.Rounded.Security,
@@ -176,47 +180,92 @@ fun AuthScreen(
                 }
             }
 
-            Button(
-                onClick = {
-                    errorMessage = null
-                    isLoading = true
-                    onGoogleSignInClicked(
-                        context = context,
-                        credentialManager = credentialManager,
-                        onAuthSuccess = {
-                            isLoading = false
-                            onAuthSuccess()
-                        },
-                        onAuthError = { msg ->
-                            isLoading = false
-                            errorMessage = msg
-                        },
-                        scope = scope,
-                        onAuthCancelled = {
-                            isLoading = false
+            if (firebaseConfigured) {
+                Button(
+                    onClick = {
+                        val cm = credentialManager
+                        if (cm == null) {
+                            errorMessage = "এই ডিভাইসে Credential Manager পাওয়া যায়নি।"
+                            return@Button
                         }
+                        errorMessage = null
+                        isLoading = true
+                        onGoogleSignInClicked(
+                            context = context,
+                            credentialManager = cm,
+                            onAuthSuccess = {
+                                isLoading = false
+                                onAuthSuccess()
+                            },
+                            onAuthError = { msg ->
+                                isLoading = false
+                                errorMessage = msg
+                            },
+                            scope = scope,
+                            onAuthCancelled = {
+                                isLoading = false
+                            }
+                        )
+                    },
+                    enabled = !isLoading,
+                    shape = RoundedCornerShape(18.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .testTag("google_sign_in_button")
+                ) {
+                    if (isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(22.dp),
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            strokeWidth = 2.5.dp
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Text("সাইন-ইন হচ্ছে...")
+                    } else {
+                        Icon(
+                            imageVector = Icons.Rounded.AutoAwesome,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            text = "Google দিয়ে সাইন-ইন করুন",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            } else {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "এই APK বিল্ডে Firebase (google-services.json) যুক্ত করা নেই, তাই লোকাল অফলাইন মোডে নিরাপদভাবে অ্যাপ ব্যবহার করতে পারবেন।",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.padding(14.dp)
                     )
-                },
-                enabled = !isLoading,
-                shape = RoundedCornerShape(18.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp)
-                    .testTag("google_sign_in_button")
-            ) {
-                if (isLoading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(22.dp),
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        strokeWidth = 2.5.dp
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Text("সাইন-ইন হচ্ছে...")
-                } else {
+                }
+
+                Button(
+                    onClick = onContinueLocalMode,
+                    shape = RoundedCornerShape(18.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .testTag("continue_local_mode_button")
+                ) {
                     Icon(
                         imageVector = Icons.Rounded.AutoAwesome,
                         contentDescription = null,
@@ -224,7 +273,7 @@ fun AuthScreen(
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(
-                        text = "Google দিয়ে সাইন-ইন করুন",
+                        text = "লোকাল মোডে চালু করুন",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -242,7 +291,10 @@ fun AuthScreen(
                     modifier = Modifier.size(14.dp)
                 )
                 Text(
-                    text = "আপনার সব কাজ ও পারমিশন আপনার ব্যক্তিগত অ্যাকাউন্টে সুরক্ষিত থাকে।",
+                    text = if (firebaseConfigured)
+                        "আপনার সব কাজ ও পারমিশন আপনার ব্যক্তিগত অ্যাকাউন্টে সুরক্ষিত থাকে।"
+                    else
+                        "আপনার কাজ, কাস্টমাইজেশন ও পারমিশন আপনার ফোনেই সুরক্ষিত থাকবে।",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

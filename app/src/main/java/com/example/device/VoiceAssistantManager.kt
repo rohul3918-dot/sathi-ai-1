@@ -7,6 +7,8 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -32,37 +34,136 @@ class VoiceAssistantManager(private val context: Context) {
     val isSpeaking: StateFlow<Boolean> = _isSpeaking.asStateFlow()
 
     init {
-        tts = TextToSpeech(context.applicationContext) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                ttsReady = true
-                val bnLocale = Locale.forLanguageTag("bn-BD")
-                val res = tts?.setLanguage(bnLocale)
-                if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    tts?.setLanguage(Locale.US)
+        try {
+            tts = TextToSpeech(context.applicationContext) { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    ttsReady = true
+                    val bnLocale = Locale.forLanguageTag("bn-BD")
+                    val res = tts?.setLanguage(bnLocale)
+                    if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
+                        tts?.setLanguage(Locale.US)
+                    }
+                    tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                        override fun onStart(utteranceId: String?) {
+                            _isSpeaking.value = true
+                        }
+
+                        override fun onDone(utteranceId: String?) {
+                            _isSpeaking.value = false
+                        }
+
+                        @Deprecated("Deprecated in Java")
+                        override fun onError(utteranceId: String?) {
+                            _isSpeaking.value = false
+                        }
+                    })
                 }
             }
+        } catch (e: Exception) {
+            Log.w("VoiceAssistant", "TextToSpeech init failed: ${e.message}")
         }
     }
 
     fun isSpeechRecognitionAvailable(): Boolean {
-        return SpeechRecognizer.isRecognitionAvailable(context)
+        return try {
+            SpeechRecognizer.isRecognitionAvailable(context)
+        } catch (_: Exception) {
+            false
+        }
     }
 
-    fun speak(text: String) {
-        if (!ttsReady || text.isBlank()) return
-        val hasBengali = text.any { it in '\u0980'..'\u09FF' }
-        val targetLocale = if (hasBengali) Locale.forLanguageTag("bn-BD") else Locale.US
-        val langResult = tts?.setLanguage(targetLocale)
-        if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
-            tts?.setLanguage(Locale.US)
+    fun speak(text: String, voiceGender: String = "FEMALE") {
+        val cleanForSpeech = stripDecorativeEmojis(text)
+        if (!ttsReady || cleanForSpeech.isBlank()) return
+        try {
+            val hasBengali = cleanForSpeech.any { it in '\u0980'..'\u09FF' }
+            val targetLocale = if (hasBengali) Locale.forLanguageTag("bn-BD") else Locale.US
+            val langResult = tts?.setLanguage(targetLocale)
+            if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+                tts?.setLanguage(Locale.US)
+            }
+
+            applyVoiceProfile(targetLocale, voiceGender)
+
+            _isSpeaking.value = true
+            tts?.speak(
+                cleanForSpeech,
+                TextToSpeech.QUEUE_FLUSH,
+                null,
+                "sathi_tts_${System.currentTimeMillis()}"
+            )
+        } catch (e: Exception) {
+            _isSpeaking.value = false
+            Log.w("VoiceAssistant", "TTS speak failed: ${e.message}")
         }
-        _isSpeaking.value = true
-        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "sathi_tts_${System.currentTimeMillis()}")
-        _isSpeaking.value = false
+    }
+
+    fun testVoice(voiceGender: String, assistantName: String) {
+        val sample = if (voiceGender == "MALE") {
+            "হ্যালো, আমি $assistantName। এখন পুরুষ কণ্ঠে কথা বলছি।"
+        } else {
+            "হ্যালো, আমি $assistantName। এখন নারী কণ্ঠে কথা বলছি।"
+        }
+        speak(sample, voiceGender)
+    }
+
+    private fun applyVoiceProfile(locale: Locale, voiceGender: String) {
+        val engine = tts ?: return
+        val wantMale = voiceGender.equals("MALE", ignoreCase = true)
+        val matchedVoice = findMatchingVoice(engine, locale, wantMale)
+
+        if (matchedVoice != null) {
+            engine.voice = matchedVoice
+            engine.setPitch(if (wantMale) 0.90f else 1.08f)
+            engine.setSpeechRate(if (wantMale) 0.96f else 1.0f)
+        } else {
+            // Fallback pitch tuning guarantees distinct Male vs Female timbre even when device has 1 Bengali voice
+            engine.setPitch(if (wantMale) 0.76f else 1.15f)
+            engine.setSpeechRate(if (wantMale) 0.95f else 1.0f)
+        }
+    }
+
+    private fun findMatchingVoice(engine: TextToSpeech, locale: Locale, wantMale: Boolean): Voice? {
+        val voices = try {
+            engine.voices ?: return null
+        } catch (_: Exception) {
+            return null
+        }
+        val langMatches = voices.filter {
+            it.locale.language.equals(locale.language, ignoreCase = true) && !it.isNetworkConnectionRequired
+        }.ifEmpty {
+            voices.filter { it.locale.language.equals(locale.language, ignoreCase = true) }
+        }
+        if (langMatches.isEmpty()) return null
+
+        val maleHints = listOf("-m-", "_m_", "male", "bgd-x-bgd", "bng-x-bng", "iom", "iol", "sfg")
+        val femaleHints = listOf("-f-", "_f_", "female", "iol-female", "tpf", "sfc")
+
+        return if (wantMale) {
+            langMatches.firstOrNull { v ->
+                val lower = v.name.lowercase(Locale.ROOT)
+                maleHints.any { lower.contains(it) }
+            }
+        } else {
+            langMatches.firstOrNull { v ->
+                val lower = v.name.lowercase(Locale.ROOT)
+                femaleHints.any { lower.contains(it) }
+            }
+        }
+    }
+
+    private fun stripDecorativeEmojis(text: String): String {
+        return text.filter { ch ->
+            val type = Character.getType(ch)
+            type != Character.OTHER_SYMBOL.toInt() && type != Character.SURROGATE.toInt()
+        }.replace(Regex("\\s+"), " ").trim()
     }
 
     fun stopSpeaking() {
-        tts?.stop()
+        try {
+            tts?.stop()
+        } catch (_: Exception) {
+        }
         _isSpeaking.value = false
     }
 
@@ -162,8 +263,11 @@ class VoiceAssistantManager(private val context: Context) {
 
     fun release() {
         stopListening()
-        tts?.stop()
-        tts?.shutdown()
+        try {
+            tts?.stop()
+            tts?.shutdown()
+        } catch (_: Exception) {
+        }
         tts = null
     }
 }

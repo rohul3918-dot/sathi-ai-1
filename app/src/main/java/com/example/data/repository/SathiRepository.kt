@@ -20,7 +20,42 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 
-class SathiRepository(private val db: FirebaseFirestore) {
+interface SathiDataStore {
+    fun observeTasks(userId: String): Flow<List<DailyTask>>
+    suspend fun addTask(
+        userId: String,
+        title: String,
+        note: String = "",
+        category: String = "PERSONAL",
+        priority: String = "MEDIUM",
+        scheduledTime: String = ""
+    ): Result<String>
+    suspend fun updateTask(userId: String, task: DailyTask): Result<Unit>
+    suspend fun toggleTaskCompletion(userId: String, task: DailyTask): Result<Unit>
+    suspend fun deleteTask(userId: String, taskId: String): Result<Unit>
+    fun observePermissions(userId: String): Flow<DevicePermissions>
+    suspend fun savePermissions(userId: String, permissions: DevicePermissions): Result<Unit>
+    fun observeActionLogs(userId: String): Flow<List<DeviceActionLog>>
+    suspend fun logDeviceAction(
+        userId: String,
+        actionType: String,
+        summary: String,
+        status: String,
+        permissionKey: String
+    ): Result<String>
+    fun observeMessages(userId: String): Flow<List<ChatMessageRecord>>
+    suspend fun addMessage(
+        userId: String,
+        sender: String,
+        text: String,
+        actionLabel: String = "",
+        actionStatus: String = "NONE",
+        clientOrder: Long = System.currentTimeMillis()
+    ): Result<String>
+    suspend fun clearMessages(userId: String): Result<Unit>
+}
+
+class SathiRepository(private val db: FirebaseFirestore) : SathiDataStore {
 
     constructor(context: Context) : this(
         FirebaseFirestore.getInstance(
@@ -40,7 +75,7 @@ class SathiRepository(private val db: FirebaseFirestore) {
     private fun messagesCollection(userId: String) =
         db.collection("users").document(userId).collection("messages")
 
-    fun observeTasks(userId: String): Flow<List<DailyTask>> =
+    override fun observeTasks(userId: String): Flow<List<DailyTask>> =
         tasksCollection(userId)
             .snapshots()
             .map { snapshot ->
@@ -57,13 +92,13 @@ class SathiRepository(private val db: FirebaseFirestore) {
                 throw error
             }
 
-    suspend fun addTask(
+    override suspend fun addTask(
         userId: String,
         title: String,
-        note: String = "",
-        category: String = "PERSONAL",
-        priority: String = "MEDIUM",
-        scheduledTime: String = ""
+        note: String,
+        category: String,
+        priority: String,
+        scheduledTime: String
     ): Result<String> {
         val cleanTitle = title.trim().take(160)
         if (cleanTitle.isEmpty()) {
@@ -92,7 +127,7 @@ class SathiRepository(private val db: FirebaseFirestore) {
         }
     }
 
-    suspend fun updateTask(userId: String, task: DailyTask): Result<Unit> {
+    override suspend fun updateTask(userId: String, task: DailyTask): Result<Unit> {
         require(task.id.isNotBlank()) { "Task ID must not be blank for update" }
         val docRef = tasksCollection(userId).document(task.id)
         return try {
@@ -115,7 +150,7 @@ class SathiRepository(private val db: FirebaseFirestore) {
         }
     }
 
-    suspend fun toggleTaskCompletion(userId: String, task: DailyTask): Result<Unit> {
+    override suspend fun toggleTaskCompletion(userId: String, task: DailyTask): Result<Unit> {
         require(task.id.isNotBlank()) { "Task ID must not be blank for toggle" }
         val docRef = tasksCollection(userId).document(task.id)
         return try {
@@ -134,7 +169,7 @@ class SathiRepository(private val db: FirebaseFirestore) {
         }
     }
 
-    suspend fun deleteTask(userId: String, taskId: String): Result<Unit> {
+    override suspend fun deleteTask(userId: String, taskId: String): Result<Unit> {
         val docRef = tasksCollection(userId).document(taskId)
         return try {
             docRef.delete().await()
@@ -147,7 +182,7 @@ class SathiRepository(private val db: FirebaseFirestore) {
         }
     }
 
-    fun observePermissions(userId: String): Flow<DevicePermissions> =
+    override fun observePermissions(userId: String): Flow<DevicePermissions> =
         permissionsDoc(userId)
             .snapshots()
             .map { snapshot ->
@@ -165,28 +200,63 @@ class SathiRepository(private val db: FirebaseFirestore) {
                 throw error
             }
 
-    suspend fun savePermissions(userId: String, permissions: DevicePermissions): Result<Unit> {
+    override suspend fun savePermissions(userId: String, permissions: DevicePermissions): Result<Unit> {
         val docRef = permissionsDoc(userId)
+        val cleanName = permissions.assistantName.trim().ifBlank { "সাথী" }.take(40)
+        val cleanStyle = permissions.conversationStyle.takeIf {
+            it in setOf("FRIENDLY", "POLITE", "CASUAL", "CONCISE", "CUSTOM")
+        } ?: "FRIENDLY"
+        val cleanCustomPrompt = permissions.customStylePrompt.trim().take(300)
+        val cleanVoiceGender = permissions.voiceGender.takeIf { it in setOf("FEMALE", "MALE") } ?: "FEMALE"
+        val sanitized = permissions.copy(
+            userId = userId,
+            assistantName = cleanName,
+            conversationStyle = cleanStyle,
+            customStylePrompt = cleanCustomPrompt,
+            voiceGender = cleanVoiceGender
+        )
         return try {
-            if (permissions.createdAt == null) {
-                val payload = mapOf(
+            val docExists = sanitized.createdAt != null || docRef.get().await().exists()
+            if (!docExists) {
+                val createPayload = mapOf(
                     "userId" to userId,
-                    "masterEnabled" to permissions.masterEnabled,
-                    "allowVoiceMic" to permissions.allowVoiceMic,
-                    "allowTtsSpeech" to permissions.allowTtsSpeech,
-                    "allowFlashlight" to permissions.allowFlashlight,
-                    "allowVolumeControl" to permissions.allowVolumeControl,
-                    "allowDisplayAndSettings" to permissions.allowDisplayAndSettings,
-                    "allowAlarmsAndTimers" to permissions.allowAlarmsAndTimers,
-                    "allowDialer" to permissions.allowDialer,
-                    "allowNotifications" to permissions.allowNotifications,
-                    "assistantLanguage" to permissions.assistantLanguage,
+                    "masterEnabled" to sanitized.masterEnabled,
+                    "allowVoiceMic" to sanitized.allowVoiceMic,
+                    "allowTtsSpeech" to sanitized.allowTtsSpeech,
+                    "allowFlashlight" to sanitized.allowFlashlight,
+                    "allowVolumeControl" to sanitized.allowVolumeControl,
+                    "allowDisplayAndSettings" to sanitized.allowDisplayAndSettings,
+                    "allowAlarmsAndTimers" to sanitized.allowAlarmsAndTimers,
+                    "allowDialer" to sanitized.allowDialer,
+                    "allowNotifications" to sanitized.allowNotifications,
+                    "assistantLanguage" to sanitized.assistantLanguage,
+                    "assistantName" to sanitized.assistantName,
+                    "conversationStyle" to sanitized.conversationStyle,
+                    "customStylePrompt" to sanitized.customStylePrompt,
+                    "voiceGender" to sanitized.voiceGender,
                     "createdAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
-                docRef.set(payload).await()
+                docRef.set(createPayload).await()
             } else {
-                docRef.set(permissions.copy(userId = userId, updatedAt = null)).await()
+                val updatePayload = mapOf(
+                    "masterEnabled" to sanitized.masterEnabled,
+                    "allowVoiceMic" to sanitized.allowVoiceMic,
+                    "allowTtsSpeech" to sanitized.allowTtsSpeech,
+                    "allowFlashlight" to sanitized.allowFlashlight,
+                    "allowVolumeControl" to sanitized.allowVolumeControl,
+                    "allowDisplayAndSettings" to sanitized.allowDisplayAndSettings,
+                    "allowAlarmsAndTimers" to sanitized.allowAlarmsAndTimers,
+                    "allowDialer" to sanitized.allowDialer,
+                    "allowNotifications" to sanitized.allowNotifications,
+                    "assistantLanguage" to sanitized.assistantLanguage,
+                    "assistantName" to sanitized.assistantName,
+                    "conversationStyle" to sanitized.conversationStyle,
+                    "customStylePrompt" to sanitized.customStylePrompt,
+                    "voiceGender" to sanitized.voiceGender,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                docRef.update(updatePayload).await()
             }
             Result.success(Unit)
         } catch (e: CancellationException) {
@@ -197,7 +267,7 @@ class SathiRepository(private val db: FirebaseFirestore) {
         }
     }
 
-    fun observeActionLogs(userId: String): Flow<List<DeviceActionLog>> =
+    override fun observeActionLogs(userId: String): Flow<List<DeviceActionLog>> =
         actionLogsCollection(userId)
             .snapshots()
             .map { snapshot ->
@@ -212,7 +282,7 @@ class SathiRepository(private val db: FirebaseFirestore) {
                 throw error
             }
 
-    suspend fun logDeviceAction(
+    override suspend fun logDeviceAction(
         userId: String,
         actionType: String,
         summary: String,
@@ -239,7 +309,7 @@ class SathiRepository(private val db: FirebaseFirestore) {
         }
     }
 
-    fun observeMessages(userId: String): Flow<List<ChatMessageRecord>> =
+    override fun observeMessages(userId: String): Flow<List<ChatMessageRecord>> =
         messagesCollection(userId)
             .snapshots()
             .map { snapshot ->
@@ -253,13 +323,13 @@ class SathiRepository(private val db: FirebaseFirestore) {
                 throw error
             }
 
-    suspend fun addMessage(
+    override suspend fun addMessage(
         userId: String,
         sender: String,
         text: String,
-        actionLabel: String = "",
-        actionStatus: String = "NONE",
-        clientOrder: Long = System.currentTimeMillis()
+        actionLabel: String,
+        actionStatus: String,
+        clientOrder: Long
     ): Result<String> {
         val cleanText = text.trim().take(4000)
         if (cleanText.isEmpty()) {
@@ -286,7 +356,7 @@ class SathiRepository(private val db: FirebaseFirestore) {
         }
     }
 
-    suspend fun clearMessages(userId: String): Result<Unit> {
+    override suspend fun clearMessages(userId: String): Result<Unit> {
         val path = "users/$userId/messages"
         return try {
             val snap = messagesCollection(userId).get().await()

@@ -60,7 +60,11 @@ class SathiRepositoryRuleTest : FirestoreEmulatorTestBase() {
                     userId = uid,
                     masterEnabled = true,
                     allowFlashlight = true,
-                    allowVolumeControl = true
+                    allowVolumeControl = true,
+                    assistantName = "নীরা",
+                    conversationStyle = "CUSTOM",
+                    customStylePrompt = "সব সময় আদর করে ও সংক্ষেপে কথা বলবে",
+                    voiceGender = "MALE"
                 )
             )
         }
@@ -70,6 +74,9 @@ class SathiRepositoryRuleTest : FirestoreEmulatorTestBase() {
             repository.observePermissions(uid).first { it.userId == uid && it.allowFlashlight }
         }
         assertTrue(loaded.allowFlashlight)
+        assertEquals("নীরা", loaded.assistantName)
+        assertEquals("CUSTOM", loaded.conversationStyle)
+        assertEquals("MALE", loaded.voiceGender)
     }
 
     @Test

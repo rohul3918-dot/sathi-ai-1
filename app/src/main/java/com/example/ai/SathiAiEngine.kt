@@ -1,7 +1,10 @@
 package com.example.ai
 
+import android.content.Context
 import android.util.Log
+import com.example.core.isFirebaseReady
 import com.example.data.model.ChatMessageRecord
+import com.example.data.model.ConversationStyle
 import com.example.data.model.DailyTask
 import com.example.data.model.DevicePermissions
 import com.google.firebase.Firebase
@@ -28,12 +31,12 @@ data class AiAssistantDirective(
     val paramText: String = ""
 )
 
-class SathiAiEngine {
+class SathiAiEngine(private val context: Context) {
 
     private val assistantSchema = Schema.obj(
         properties = mapOf(
             "reply" to Schema.string(
-                description = "Conversational, friendly reply to the user (natural Bengali if user speaks Bengali or bilingual mode, English if English)."
+                description = "Conversational reply decorated naturally with relevant emojis (except creator signature questions which must return strictly the creator string)."
             ),
             "actionType" to Schema.enumeration(
                 values = listOf(
@@ -85,24 +88,29 @@ class SathiAiEngine {
             systemInstruction = content {
                 text(
                     """
-                    You are Sathi AI (সাথী এআই), a warm, intelligent, respectful personal AI assistant on Android.
+                    You are a personal AI assistant on Android. Always adopt the exact Assistant Name, Conversation Style, Language Preference, and Voice Gender provided in the prompt's [Assistant Personality] block.
                     Core duties:
-                    1. Talk naturally with the user (prefer natural Bengali unless user explicitly writes in English or language preference is English).
-                    2. Help organize daily tasks: when user asks to add/remind/schedule a task, set actionType="CREATE_TASK" with concise taskTitle, category, priority, and taskTime. When they mark a task done or ask to remove one, match the closest task ID from the provided task list and set COMPLETE_TASK or DELETE_TASK.
-                    3. Execute device controls ONLY if the user requested them. Always check the provided Permission Matrix:
-                       - masterEnabled must be true for ANY DEVICE_* action.
-                       - DEVICE_FLASHLIGHT requires allowFlashlight=true
-                       - DEVICE_VOLUME requires allowVolumeControl=true
-                       - DEVICE_BRIGHTNESS, DEVICE_WIFI_PANEL, DEVICE_BLUETOOTH_SETTINGS require allowDisplayAndSettings=true
-                       - DEVICE_ALARM, DEVICE_TIMER require allowAlarmsAndTimers=true
-                       - DEVICE_DIAL requires allowDialer=true
-                       - DEVICE_NOTIFY requires allowNotifications=true
-                       If a device permission is FALSE, still output the requested actionType ONLY IF you want the app to log the permission block, OR set actionType="NONE" and politely tell the user in Bengali which permission toggle to turn on in the Permission tab. Actually, ALWAYS output the matching DEVICE_* actionType when the user explicitly requests a device control so the app's permission gate enforces it deterministically and records it transparently—and mention in `reply` if it looks locked!
-                    4. For DEVICE_ALARM, put 24-hour time "HH:MM" in paramText (e.g., "07:30") and alarm label in taskTitle.
-                    5. For DEVICE_TIMER, put total seconds in paramInt and timer label in taskTitle.
-                    6. For DEVICE_VOLUME or DEVICE_BRIGHTNESS, put 0..100 integer in paramInt.
-                    7. For DEVICE_FLASHLIGHT, put true (on) or false (off) in paramBool.
-                    8. For DEVICE_DIAL, put the digits/phone number in paramText.
+                    1. Identity & Creator Signature Rule (HIGHEST PRIORITY):
+                       - Always recognize and respond to the user-configured Assistant Name.
+                       - STRICT CREATOR RULE: Whenever the user asks who created, made, built, or developed you (e.g., "তোমায় কে বানিয়েছেন?", "কে তৈরি করেছে?", "Who created you?", "Who made you?"), set actionType="NONE" and set `reply` STRICTLY to:
+                         * If voiceGender == "FEMALE": "আমার কাস  রুহুল আমিন"
+                         * If voiceGender == "MALE": "রুহুল আমিন"
+                         Return ONLY that exact string with NO extra words, punctuation, or emojis.
+                    2. Expressive Emoji Chatting:
+                       - For all normal replies (everything except the creator signature question), naturally and tastefully decorate your `reply` with relevant expressive emojis (✨, 😊, 📋, ✅, 💡, ⏰, 🔦, 🔊, 🌟, 🎯).
+                    3. Conversation Style & Language:
+                       - Strictly follow the requested conversationStyle and customStylePrompt.
+                       - Prefer natural Bengali unless user writes in English or assistantLanguage == "en".
+                    4. Daily Task Management:
+                       - When user asks to add/remind/schedule a task, set actionType="CREATE_TASK" with concise taskTitle, category, priority, and taskTime.
+                       - When marking a task done or removing one, match the closest task ID from [Current Daily Tasks] and set COMPLETE_TASK or DELETE_TASK.
+                    5. Permission-Gated Device Controls:
+                       - Whenever the user asks to control a device feature (flashlight, volume, brightness, alarm, timer, Wi-Fi, Bluetooth, dialer, notification), output the corresponding DEVICE_* actionType so the app's permission gate enforces it deterministically.
+                       - For DEVICE_ALARM: 24-hour "HH:MM" in paramText and label in taskTitle.
+                       - For DEVICE_TIMER: seconds in paramInt and label in taskTitle.
+                       - For DEVICE_VOLUME / DEVICE_BRIGHTNESS: 0..100 integer in paramInt.
+                       - For DEVICE_FLASHLIGHT: true (on) or false (off) in paramBool.
+                       - For DEVICE_DIAL: digits/phone number in paramText.
                     """.trimIndent()
                 )
             }
@@ -115,12 +123,56 @@ class SathiAiEngine {
         )
     }
 
+    fun isCreatorQuestion(text: String): Boolean {
+        val normalized = text.trim().lowercase()
+        if (normalized.isEmpty()) return false
+        val bnMatches = listOf(
+            "কে বানিয়ে", "কে বানাই", "কে তৈরি", "কে সৃষ্টি",
+            "বানিয়েছেন কে", "বানিয়েছে কে", "তৈরি করেছে", "তৈরি করেছেন",
+            "নির্মাতা কে", "ক্রিয়েটর কে", "ডেভেলপার কে", "কে ডেভেলপ",
+            "তোমাকে কে", "তোমায় কে", "আপনাকে কে"
+        )
+        val enMatches = listOf(
+            "who created you", "who made you", "who built you",
+            "who developed you", "who is your creator", "who is your maker",
+            "who is your developer", "who designed you"
+        )
+        val hasBnCreatorWord = bnMatches.any { normalized.contains(it) } &&
+            (normalized.contains("বানা") || normalized.contains("বানিয়ে") ||
+                normalized.contains("বানাই") || normalized.contains("তৈরি") ||
+                normalized.contains("সৃষ্টি") || normalized.contains("নির্মাতা") ||
+                normalized.contains("ক্রিয়েটর") || normalized.contains("ডেভেলপ"))
+        return hasBnCreatorWord || enMatches.any { normalized.contains(it) }
+    }
+
+    fun creatorSignatureReply(voiceGender: String): String {
+        return if (voiceGender.equals("FEMALE", ignoreCase = true)) {
+            "আমার কাস  রুহুল আমিন"
+        } else {
+            "রুহুল আমিন"
+        }
+    }
+
     suspend fun processUserTurn(
         userMessage: String,
         tasks: List<DailyTask>,
         permissions: DevicePermissions,
         recentHistory: List<ChatMessageRecord>
     ): Result<AiAssistantDirective> {
+        // Deterministic enforcement of the Creator Signature Rule
+        if (isCreatorQuestion(userMessage)) {
+            return Result.success(
+                AiAssistantDirective(
+                    reply = creatorSignatureReply(permissions.voiceGender),
+                    actionType = "NONE"
+                )
+            )
+        }
+
+        if (!isFirebaseReady(context)) {
+            return Result.success(processLocalFallbackTurn(userMessage, tasks, permissions))
+        }
+
         val taskContext = if (tasks.isEmpty()) {
             "No tasks currently saved."
         } else {
@@ -128,6 +180,15 @@ class SathiAiEngine {
                 "- id=${t.id} | title=${t.title} | cat=${t.category} | prio=${t.priority} | time=${t.scheduledTime} | done=${t.completed}"
             }
         }
+
+        val styleEnum = ConversationStyle.fromKey(permissions.conversationStyle)
+        val personalityContext = """
+            assistantName=${permissions.assistantName.ifBlank { "সাথী" }}
+            assistantLanguage=${permissions.assistantLanguage}
+            voiceGender=${permissions.voiceGender}
+            conversationStyle=${styleEnum.key} (${styleEnum.instruction})
+            customStylePrompt=${permissions.customStylePrompt}
+        """.trimIndent()
 
         val permContext = """
             masterEnabled=${permissions.masterEnabled}
@@ -139,7 +200,6 @@ class SathiAiEngine {
             allowAlarmsAndTimers=${permissions.allowAlarmsAndTimers}
             allowDialer=${permissions.allowDialer}
             allowNotifications=${permissions.allowNotifications}
-            assistantLanguage=${permissions.assistantLanguage}
         """.trimIndent()
 
         val historyText = recentHistory.takeLast(8).joinToString("\n") { msg ->
@@ -147,6 +207,9 @@ class SathiAiEngine {
         }
 
         val prompt = """
+            [Assistant Personality]
+            $personalityContext
+
             [User Permission Settings]
             $permContext
 
@@ -168,7 +231,7 @@ class SathiAiEngine {
             val json = JSONObject(raw)
             Result.success(
                 AiAssistantDirective(
-                    reply = json.optString("reply", "আমি আপনার কথা শুনেছি।"),
+                    reply = json.optString("reply", "আমি আপনার কথা শুনেছি 😊✨"),
                     actionType = json.optString("actionType", "NONE"),
                     taskTitle = json.optString("taskTitle", ""),
                     taskNote = json.optString("taskNote", ""),
@@ -183,7 +246,7 @@ class SathiAiEngine {
             )
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "AI turn timed out", e)
-            Result.failure(IllegalStateException("AI উত্তর দিতে সময় বেশি নিচ্ছে (৬০ সেকেন্ড)। আবার চেষ্টা করুন।", e))
+            Result.failure(IllegalStateException("AI উত্তর দিতে সময় বেশি নিচ্ছে (৬০ সেকেন্ড)। আবার চেষ্টা করুন ⏳", e))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -192,16 +255,114 @@ class SathiAiEngine {
         }
     }
 
-    suspend fun generateSmartDayPlan(tasks: List<DailyTask>, language: String): Result<String> {
+    private fun processLocalFallbackTurn(
+        userMessage: String,
+        tasks: List<DailyTask>,
+        permissions: DevicePermissions
+    ): AiAssistantDirective {
+        val lower = userMessage.lowercase()
+        val aiName = permissions.assistantName.ifBlank { "সাথী" }
+        val isShort = permissions.conversationStyle == "CONCISE"
+
+        return when {
+            lower.contains("ফ্ল্যাশ") || lower.contains("টর্চ") || lower.contains("flashlight") || lower.contains("torch") -> {
+                val enable = !(lower.contains("বন্ধ") || lower.contains("off"))
+                AiAssistantDirective(
+                    reply = if (enable) "ঠিক আছে! ফ্ল্যাশলাইট চালু করছি 🔦✨" else "ঠিক আছে! ফ্ল্যাশলাইট বন্ধ করছি 🔦🌙",
+                    actionType = "DEVICE_FLASHLIGHT",
+                    paramBool = enable
+                )
+            }
+            lower.contains("ভলিউম") || lower.contains("volume") -> {
+                val pct = Regex("\\d+").find(lower)?.value?.toIntOrNull()?.coerceIn(0, 100) ?: 50
+                AiAssistantDirective(
+                    reply = "মিডিয়া ভলিউম $pct% এ সেট করছি 🔊✨",
+                    actionType = "DEVICE_VOLUME",
+                    paramInt = pct
+                )
+            }
+            lower.contains("ব্রাইটনেস") || lower.contains("brightness") -> {
+                val pct = Regex("\\d+").find(lower)?.value?.toIntOrNull()?.coerceIn(10, 100) ?: 70
+                AiAssistantDirective(
+                    reply = "স্ক্রিন ব্রাইটনেস $pct% করছি ☀️✨",
+                    actionType = "DEVICE_BRIGHTNESS",
+                    paramInt = pct
+                )
+            }
+            lower.contains("টাইমার") || lower.contains("timer") -> {
+                val mins = Regex("\\d+").find(lower)?.value?.toIntOrNull()?.coerceIn(1, 180) ?: 5
+                AiAssistantDirective(
+                    reply = "$mins মিনিটের টাইমার সেট করছি ⏱️✨",
+                    actionType = "DEVICE_TIMER",
+                    taskTitle = "$aiName টাইমার",
+                    paramInt = mins * 60
+                )
+            }
+            lower.contains("wifi") || lower.contains("ওয়াইফাই") -> {
+                AiAssistantDirective(
+                    reply = "Wi-Fi প্যানেল খুলছি 📶✨",
+                    actionType = "DEVICE_WIFI_PANEL"
+                )
+            }
+            lower.contains("bluetooth") || lower.contains("ব্লুটুথ") -> {
+                AiAssistantDirective(
+                    reply = "Bluetooth সেটিংস খুলছি 🔵✨",
+                    actionType = "DEVICE_BLUETOOTH_SETTINGS"
+                )
+            }
+            lower.contains("যোগ") || lower.contains("add") || lower.contains("রিমাইন্ড") -> {
+                AiAssistantDirective(
+                    reply = "দারুণ! আপনার কাজটি তালিকায় যোগ করেছি 📋✅",
+                    actionType = "CREATE_TASK",
+                    taskTitle = userMessage.take(80),
+                    taskCategory = "PERSONAL",
+                    taskPriority = "MEDIUM"
+                )
+            }
+            lower.contains("কাজ") || lower.contains("রুটিন") || lower.contains("task") -> {
+                val pending = tasks.filter { !it.completed }
+                val summary = if (pending.isEmpty()) {
+                    "আপনার এখন কোনো বাকি কাজ নেই! 🎉✨"
+                } else {
+                    "আপনার ${pending.size} টি কাজ বাকি আছে 📋💡:\n" +
+                        pending.take(5).joinToString("\n") { "• ${it.title}" }
+                }
+                AiAssistantDirective(reply = summary, actionType = "NONE")
+            }
+            else -> {
+                val greeting = if (isShort) {
+                    "আমি $aiName 😊 আপনার কাজ ও ডিভাইস কমান্ডের জন্য প্রস্তুত ✨"
+                } else {
+                    "হ্যালো! আমি $aiName 🌟 আপনার কাজ সাজাতে বা ডিভাইস কন্ট্রোল করতে আমাকে নির্দেশ দিন 😊✨ (এই লোকাল বিল্ডে অফলাইন মোড চালু আছে; পূর্ণ Gemini চ্যাটের জন্য `google-services.json` যুক্ত করুন 💡)"
+                }
+                AiAssistantDirective(reply = greeting, actionType = "NONE")
+            }
+        }
+    }
+
+    suspend fun generateSmartDayPlan(tasks: List<DailyTask>, permissions: DevicePermissions): Result<String> {
         val pending = tasks.filter { !it.completed }
         if (pending.isEmpty()) {
-            return Result.success("আপনার সব কাজ সম্পন্ন হয়েছে! আজকের দিনটি উপভোগ করুন।")
+            return Result.success("আপনার সব কাজ সম্পন্ন হয়েছে! আজকের দিনটি উপভোগ করুন 🎉✨")
+        }
+        if (!isFirebaseReady(context)) {
+            val formatted = pending.mapIndexed { idx, task ->
+                val timePart = if (task.scheduledTime.isNotBlank()) " (${task.scheduledTime})" else ""
+                "${idx + 1}. ${task.title}$timePart ✅"
+            }.joinToString("\n")
+            return Result.success("আজকের কাজের তালিকা 📋✨:\n$formatted")
         }
         val listSummary = pending.joinToString("\n") {
             "- ${it.title} (${it.category}, priority=${it.priority}, time=${it.scheduledTime.ifBlank { "unscheduled" }})"
         }
-        val langNote = if (language == "en") "Write in clear English." else "Write in warm, well-structured Bengali with clear time blocks (সকাল, দুপুর, বিকাল, রাত)."
+        val style = ConversationStyle.fromKey(permissions.conversationStyle)
+        val langNote = if (permissions.assistantLanguage == "en") {
+            "Write in clear English with friendly emojis."
+        } else {
+            "Write in warm, well-structured Bengali with clear time blocks (সকাল, দুপুর, বিকাল, রাত) and relevant emojis."
+        }
         val prompt = """
+            You are ${permissions.assistantName}. Style: ${style.instruction} ${permissions.customStylePrompt}
             Organize these pending daily tasks into an actionable, calm, realistic daily routine.
             $langNote
             Keep it concise (under 180 words) with bullet points.
@@ -221,7 +382,7 @@ class SathiAiEngine {
             }
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "Day plan timed out", e)
-            Result.failure(IllegalStateException("রুটিন তৈরি করতে সময় শেষ হয়েছে। আবার চেষ্টা করুন।", e))
+            Result.failure(IllegalStateException("রুটিন তৈরি করতে সময় শেষ হয়েছে। আবার চেষ্টা করুন ⏳", e))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

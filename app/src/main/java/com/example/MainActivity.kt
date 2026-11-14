@@ -66,9 +66,13 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.ai.SathiAiEngine
 import com.example.core.attemptAutoSignIn
-import com.example.core.authStateFlow
 import com.example.core.configureAppCheck
+import com.example.core.isFirebaseReady
+import com.example.core.safeAuthStateFlow
+import com.example.core.safeCurrentUser
 import com.example.core.signOutUser
+import com.example.data.repository.LocalFallbackSathiDataStore
+import com.example.data.repository.SathiDataStore
 import com.example.data.repository.SathiRepository
 import com.example.device.DeviceControlManager
 import com.example.device.VoiceAssistantManager
@@ -78,8 +82,6 @@ import com.example.ui.screens.AssistantChatScreen
 import com.example.ui.screens.PermissionsDeviceScreen
 import com.example.ui.screens.TasksScreen
 import com.example.ui.theme.SathiAiTheme
-import com.google.firebase.Firebase
-import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FirebaseFirestore
 
 private enum class SathiTab(
@@ -96,7 +98,7 @@ private enum class SathiTab(
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // STEP 1: Mandatory App Check configuration with launch intent before any UI or ViewModels
+        // Safely configure App Check (no-op if google-services.json is absent)
         configureAppCheck(this, intent)
 
         enableEdgeToEdge()
@@ -112,30 +114,58 @@ class MainActivity : ComponentActivity() {
 fun AppNavigation() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val auth = remember { Firebase.auth }
-    val currentUser by auth.authStateFlow()
-        .collectAsStateWithLifecycle(initialValue = auth.currentUser)
+    val firebaseReady = remember(context) { isFirebaseReady(context) }
+    val currentUser by remember(firebaseReady) {
+        safeAuthStateFlow(context)
+    }.collectAsStateWithLifecycle(initialValue = remember(firebaseReady) { safeCurrentUser(context) })
 
-    LaunchedEffect(Unit) {
-        if (auth.currentUser == null) {
-            attemptAutoSignIn(
-                context = context,
-                credentialManager = CredentialManager.create(context),
-                onAuthSuccess = {},
-                onUnauthenticated = {},
-                scope = scope
-            )
+    var localModeActive by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(firebaseReady) {
+        if (firebaseReady && safeCurrentUser(context) == null) {
+            runCatching { CredentialManager.create(context) }.getOrNull()?.let { cm ->
+                attemptAutoSignIn(
+                    context = context,
+                    credentialManager = cm,
+                    onAuthSuccess = {},
+                    onUnauthenticated = {},
+                    scope = scope
+                )
+            }
         }
     }
 
     val user = currentUser
-    if (user == null) {
-        AuthScreen(onAuthSuccess = {})
-    } else {
-        key(user.uid) {
-            SathiHomeShell(
-                currentUserId = user.uid,
-                userDisplayName = user.displayName ?: user.email ?: "ব্যবহারকারী"
+    when {
+        firebaseReady && user != null -> {
+            key(user.uid) {
+                SathiHomeShell(
+                    currentUserId = user.uid,
+                    userDisplayName = user.displayName ?: user.email ?: "ব্যবহারকারী",
+                    isLocalMode = false,
+                    onExitLocalMode = {}
+                )
+            }
+        }
+        !firebaseReady && localModeActive -> {
+            key("local_user") {
+                SathiHomeShell(
+                    currentUserId = "local_user",
+                    userDisplayName = "ব্যক্তিগত লোকাল প্রোফাইল",
+                    isLocalMode = true,
+                    onExitLocalMode = { localModeActive = false }
+                )
+            }
+        }
+        else -> {
+            AuthScreen(
+                onAuthSuccess = {},
+                firebaseConfigured = firebaseReady,
+                onContinueLocalMode = {
+                    if (!firebaseReady) {
+                        localModeActive = true
+                    }
+                }
             )
         }
     }
@@ -145,24 +175,33 @@ fun AppNavigation() {
 @Composable
 fun SathiHomeShell(
     currentUserId: String,
-    userDisplayName: String
+    userDisplayName: String,
+    isLocalMode: Boolean,
+    onExitLocalMode: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val credentialManager = remember(context) { CredentialManager.create(context) }
+    val credentialManager = remember(context) {
+        runCatching { CredentialManager.create(context) }.getOrNull()
+    }
 
     val viewModel: SathiViewModel = viewModel(
-        key = currentUserId,
+        key = "${currentUserId}_${isLocalMode}",
         factory = viewModelFactory {
             initializer {
                 val app = checkNotNull(this[APPLICATION_KEY]) {
                     "APPLICATION_KEY missing from CreationExtras"
                 }
-                val databaseId = app.getString(R.string.firestore_database_id)
-                val db = FirebaseFirestore.getInstance(databaseId)
+                val store: SathiDataStore = if (isLocalMode) {
+                    LocalFallbackSathiDataStore(app)
+                } else {
+                    val databaseId = app.getString(R.string.firestore_database_id)
+                    val db = FirebaseFirestore.getInstance(databaseId)
+                    SathiRepository(db)
+                }
                 SathiViewModel(
-                    repository = SathiRepository(db),
-                    aiEngine = SathiAiEngine(),
+                    repository = store,
+                    aiEngine = SathiAiEngine(app),
                     deviceManager = DeviceControlManager(app),
                     voiceManager = VoiceAssistantManager(app),
                     currentUserId = currentUserId
@@ -175,6 +214,7 @@ fun SathiHomeShell(
     val permissions by viewModel.permissionsState.collectAsStateWithLifecycle()
     val statusBanner by viewModel.statusBanner.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    val aiName = permissions.assistantName.ifBlank { "সাথী" }
 
     LaunchedEffect(statusBanner) {
         statusBanner?.let {
@@ -200,7 +240,7 @@ fun SathiHomeShell(
                     title = {
                         Column {
                             Text(
-                                text = "Sathi AI",
+                                text = "$aiName AI",
                                 style = MaterialTheme.typography.titleLarge
                             )
                             Text(
@@ -240,10 +280,16 @@ fun SathiHomeShell(
                         }
                         IconButton(
                             onClick = {
-                                signOutUser(
-                                    credentialManager = credentialManager,
-                                    scope = scope
-                                )
+                                if (isLocalMode) {
+                                    onExitLocalMode()
+                                } else if (credentialManager != null) {
+                                    signOutUser(
+                                        context = context,
+                                        credentialManager = credentialManager,
+                                        scope = scope,
+                                        onSignOutComplete = onExitLocalMode
+                                    )
+                                }
                             },
                             modifier = Modifier.testTag("sign_out_button")
                         ) {
@@ -265,16 +311,17 @@ fun SathiHomeShell(
                     ) {
                         SathiTab.entries.forEach { tab ->
                             val isSelected = selectedTab == tab
+                            val label = if (tab == SathiTab.ASSISTANT) "$aiName চ্যাট" else tab.labelBn
                             NavigationBarItem(
                                 selected = isSelected,
                                 onClick = { selectedTab = tab },
                                 icon = {
                                     Icon(
                                         imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
-                                        contentDescription = tab.labelBn
+                                        contentDescription = label
                                     )
                                 },
-                                label = { Text(tab.labelBn) },
+                                label = { Text(label) },
                                 modifier = Modifier.testTag(tab.tag)
                             )
                         }
@@ -295,16 +342,17 @@ fun SathiHomeShell(
                         Spacer(Modifier.size(12.dp))
                         SathiTab.entries.forEach { tab ->
                             val isSelected = selectedTab == tab
+                            val label = if (tab == SathiTab.ASSISTANT) "$aiName চ্যাট" else tab.labelBn
                             NavigationRailItem(
                                 selected = isSelected,
                                 onClick = { selectedTab = tab },
                                 icon = {
                                     Icon(
                                         imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
-                                        contentDescription = tab.labelBn
+                                        contentDescription = label
                                     )
                                 },
-                                label = { Text(tab.labelBn) },
+                                label = { Text(label) },
                                 modifier = Modifier.testTag(tab.tag)
                             )
                         }

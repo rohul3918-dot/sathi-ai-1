@@ -64,6 +64,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.model.DeviceActionLog
 import com.example.ui.SathiViewModel
+import com.example.ui.components.AssistantPersonalizationCard
 import com.example.ui.theme.EmeraldSuccess
 
 @Composable
@@ -120,6 +121,19 @@ fun PermissionsDeviceScreen(
             contentPadding = PaddingValues(top = 8.dp, bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // Assistant Personalization Card (Name, Tone, Voice)
+            item {
+                AssistantPersonalizationCard(
+                    permissions = perms,
+                    onSave = { name, style, customPrompt, voiceGender ->
+                        viewModel.updatePersonalization(name, style, customPrompt, voiceGender)
+                    },
+                    onTestVoice = { voiceGender ->
+                        viewModel.testAssistantVoice(voiceGender)
+                    }
+                )
+            }
+
             // Master Sovereignty Card
             item {
                 Surface(
@@ -241,7 +255,7 @@ fun PermissionsDeviceScreen(
                 PermissionControlCard(
                     icon = Icons.Rounded.RecordVoiceOver,
                     title = "ভয়েস উত্তর (Speak Aloud / TTS)",
-                    description = "সাথী এআই উত্তর দেওয়ার সময় মুখে পড়ে শোনাবে।",
+                    description = "${perms.assistantName.ifBlank { "সাথী" }} উত্তর দেওয়ার সময় মুখে পড়ে শোনাবে।",
                     checked = perms.allowTtsSpeech,
                     masterEnabled = perms.masterEnabled,
                     testTag = "perm_tts_switch",

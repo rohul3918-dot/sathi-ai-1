@@ -3,7 +3,6 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Global safety net: deny everything by default
     match /{document=**} {
       allow read, write: if false;
     }
@@ -55,7 +54,11 @@ service cloud.firestore {
              data.allowAlarmsAndTimers is bool &&
              data.allowDialer is bool &&
              data.allowNotifications is bool &&
-             data.assistantLanguage in ['bn', 'en', 'bilingual'];
+             data.assistantLanguage in ['bn', 'en', 'bilingual'] &&
+             (!('assistantName' in data) || (data.assistantName is string && data.assistantName.size() >= 1 && data.assistantName.size() <= 40)) &&
+             (!('conversationStyle' in data) || data.conversationStyle in ['FRIENDLY', 'POLITE', 'CASUAL', 'CONCISE', 'CUSTOM']) &&
+             (!('customStylePrompt' in data) || (data.customStylePrompt is string && data.customStylePrompt.size() <= 300)) &&
+             (!('voiceGender' in data) || data.voiceGender in ['FEMALE', 'MALE']);
     }
 
     function isValidActionLog(data, userId) {
@@ -114,7 +117,8 @@ service cloud.firestore {
                            'userId', 'masterEnabled', 'allowVoiceMic', 'allowTtsSpeech',
                            'allowFlashlight', 'allowVolumeControl', 'allowDisplayAndSettings',
                            'allowAlarmsAndTimers', 'allowDialer', 'allowNotifications',
-                           'assistantLanguage', 'createdAt', 'updatedAt'
+                           'assistantLanguage', 'assistantName', 'conversationStyle',
+                           'customStylePrompt', 'voiceGender', 'createdAt', 'updatedAt'
                          ]) &&
                          isValidPermissions(incoming(), userId) &&
                          isValidTimestamp(incoming().createdAt) &&
@@ -130,7 +134,8 @@ service cloud.firestore {
                            'masterEnabled', 'allowVoiceMic', 'allowTtsSpeech',
                            'allowFlashlight', 'allowVolumeControl', 'allowDisplayAndSettings',
                            'allowAlarmsAndTimers', 'allowDialer', 'allowNotifications',
-                           'assistantLanguage', 'updatedAt'
+                           'assistantLanguage', 'assistantName', 'conversationStyle',
+                           'customStylePrompt', 'voiceGender', 'updatedAt'
                          ]);
         allow delete: if isOwner(userId) && isValidId(settingId);
       }

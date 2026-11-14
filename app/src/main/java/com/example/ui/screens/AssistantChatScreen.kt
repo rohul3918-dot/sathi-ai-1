@@ -48,6 +48,7 @@ import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.TaskAlt
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -85,9 +86,12 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.data.model.ChatMessageRecord
+import com.example.data.model.ConversationStyle
+import com.example.data.model.VoiceGender
 import com.example.device.VoiceListeningState
 import com.example.ui.PendingPermissionPrompt
 import com.example.ui.SathiViewModel
+import com.example.ui.components.AssistantPersonalizationDialog
 import com.example.ui.theme.EmeraldSuccess
 
 @Composable
@@ -106,7 +110,24 @@ fun AssistantChatScreen(
     val pendingPrompt by viewModel.pendingPermissionPrompt.collectAsStateWithLifecycle()
 
     var inputText by remember { mutableStateOf("") }
+    var showCustomizeDialog by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+    val aiName = permissions.assistantName.ifBlank { "সাথী" }
+    val styleLabel = ConversationStyle.fromKey(permissions.conversationStyle).bnLabel
+    val voiceLabel = VoiceGender.fromKey(permissions.voiceGender).bnLabel
+
+    if (showCustomizeDialog) {
+        AssistantPersonalizationDialog(
+            permissions = permissions,
+            onDismiss = { showCustomizeDialog = false },
+            onSave = { name, style, customPrompt, voiceGender ->
+                viewModel.updatePersonalization(name, style, customPrompt, voiceGender)
+            },
+            onTestVoice = { voiceGender ->
+                viewModel.testAssistantVoice(voiceGender)
+            }
+        )
+    }
 
     val micPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -146,10 +167,13 @@ fun AssistantChatScreen(
     ) {
         // Companion Hero Strip
         CompanionOrbHeader(
+            assistantName = aiName,
+            styleAndVoiceSummary = "$styleLabel • $voiceLabel",
             isThinking = isThinking,
             isListening = listeningState is VoiceListeningState.Listening,
             ttsEnabled = permissions.allowTtsSpeech,
             hasMessages = messages.isNotEmpty(),
+            onCustomize = { showCustomizeDialog = true },
             onToggleTts = {
                 viewModel.updatePermissions(permissions.copy(allowTtsSpeech = !permissions.allowTtsSpeech))
             },
@@ -263,6 +287,8 @@ fun AssistantChatScreen(
             if (messages.isEmpty()) {
                 item {
                     WelcomeAssistantCard(
+                        assistantName = aiName,
+                        onCustomize = { showCustomizeDialog = true },
                         onPickPrompt = { prompt ->
                             viewModel.sendUserMessage(prompt, activity)
                         }
@@ -290,7 +316,7 @@ fun AssistantChatScreen(
                             color = MaterialTheme.colorScheme.primary
                         )
                         Text(
-                            text = "সাথী ভাবছে...",
+                            text = "$aiName ভাবছে...",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -366,7 +392,7 @@ fun AssistantChatScreen(
                 onValueChange = { inputText = it },
                 placeholder = {
                     Text(
-                        text = "সাথী-কে লিখুন বা নির্দেশ দিন...",
+                        text = "$aiName-কে লিখুন বা নির্দেশ দিন...",
                         style = MaterialTheme.typography.bodyMedium
                     )
                 },
@@ -420,10 +446,13 @@ fun AssistantChatScreen(
 
 @Composable
 private fun CompanionOrbHeader(
+    assistantName: String,
+    styleAndVoiceSummary: String,
     isThinking: Boolean,
     isListening: Boolean,
     ttsEnabled: Boolean,
     hasMessages: Boolean,
+    onCustomize: () -> Unit,
     onToggleTts: () -> Unit,
     onClearChat: () -> Unit
 ) {
@@ -470,7 +499,7 @@ private fun CompanionOrbHeader(
             ) {
                 Image(
                     painter = painterResource(id = R.drawable.img_assistant_orb_1794619681366),
-                    contentDescription = "Sathi AI Avatar",
+                    contentDescription = "$assistantName Avatar",
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -480,7 +509,7 @@ private fun CompanionOrbHeader(
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "সাথী এআই অ্যাসিস্ট্যান্ট",
+                    text = "$assistantName অ্যাসিস্ট্যান্ট",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -488,10 +517,21 @@ private fun CompanionOrbHeader(
                     text = when {
                         isListening -> "আপনার কথা শুনছি..."
                         isThinking -> "কাজ ও কমান্ড প্রসেস হচ্ছে..."
-                        else -> "কথা বলুন, কাজ গুছিয়ে নিন বা ডিভাইস কন্ট্রোল করুন"
+                        else -> styleAndVoiceSummary
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            IconButton(
+                onClick = onCustomize,
+                modifier = Modifier.testTag("customize_assistant_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Tune,
+                    contentDescription = "নাম, ধরন ও ভয়েস কাস্টমাইজ করুন",
+                    tint = MaterialTheme.colorScheme.primary
                 )
             }
 
@@ -526,6 +566,8 @@ private fun CompanionOrbHeader(
 
 @Composable
 private fun WelcomeAssistantCard(
+    assistantName: String,
+    onCustomize: () -> Unit,
     onPickPrompt: (String) -> Unit
 ) {
     Surface(
@@ -546,18 +588,28 @@ private fun WelcomeAssistantCard(
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.AutoAwesome,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    text = "হ্যালো! আমি আপনার ব্যক্তিগত সাথী",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.AutoAwesome,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "হ্যালো! আমি আপনার ব্যক্তিগত $assistantName 😊✨",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                TextButton(onClick = onCustomize) {
+                    Text("কাস্টমাইজ")
+                }
             }
             Text(
                 text = "আপনি আমাকে বাংলা বা ইংরেজিতে বলতে পারেন—আমি আপনার কাজ লিখে রাখব, দিন সাজিয়ে দেব এবং আপনার দেওয়া পারমিশন অনুযায়ী ফ্ল্যাশলাইট, ভলিউম, অ্যালার্ম বা সেটিংস কন্ট্রোল করব।",

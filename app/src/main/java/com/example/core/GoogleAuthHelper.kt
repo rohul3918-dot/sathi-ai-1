@@ -23,9 +23,32 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+
+fun safeCurrentUser(context: Context): FirebaseUser? {
+    return try {
+        if (!isFirebaseReady(context)) null else Firebase.auth.currentUser
+    } catch (e: Exception) {
+        Log.w("Auth", "Unable to read Firebase currentUser: ${e.message}")
+        null
+    }
+}
+
+fun safeAuthStateFlow(context: Context): Flow<FirebaseUser?> {
+    if (!isFirebaseReady(context)) {
+        return flowOf(null)
+    }
+    return try {
+        val auth = Firebase.auth
+        auth.authStateFlow()
+    } catch (e: Exception) {
+        Log.w("Auth", "Unable to observe Firebase auth state: ${e.message}")
+        flowOf(null)
+    }
+}
 
 internal fun FirebaseAuth.authStateFlow(): Flow<FirebaseUser?> = callbackFlow {
     val listener = FirebaseAuth.AuthStateListener { auth ->
@@ -35,6 +58,14 @@ internal fun FirebaseAuth.authStateFlow(): Flow<FirebaseUser?> = callbackFlow {
     awaitClose { removeAuthStateListener(listener) }
 }
 
+private fun resolveWebClientId(context: Context): String {
+    return try {
+        context.getString(R.string.default_web_client_id).trim()
+    } catch (_: Exception) {
+        ""
+    }
+}
+
 fun attemptAutoSignIn(
     context: Context,
     credentialManager: CredentialManager,
@@ -42,25 +73,37 @@ fun attemptAutoSignIn(
     onUnauthenticated: () -> Unit,
     scope: CoroutineScope
 ) {
-    if (Firebase.auth.currentUser != null) {
-        onAuthSuccess()
+    if (!isFirebaseReady(context)) {
+        onUnauthenticated()
         return
     }
-    val clientId = try {
-        context.getString(R.string.default_web_client_id)
+    try {
+        if (Firebase.auth.currentUser != null) {
+            onAuthSuccess()
+            return
+        }
     } catch (_: Exception) {
-        ""
+        onUnauthenticated()
+        return
     }
+
+    val clientId = resolveWebClientId(context)
     if (clientId.isBlank()) {
         onUnauthenticated()
         return
     }
 
-    val googleIdOption = GetGoogleIdOption.Builder()
-        .setFilterByAuthorizedAccounts(true)
-        .setServerClientId(clientId)
-        .setAutoSelectEnabled(true)
-        .build()
+    val googleIdOption = try {
+        GetGoogleIdOption.Builder()
+            .setFilterByAuthorizedAccounts(true)
+            .setServerClientId(clientId)
+            .setAutoSelectEnabled(true)
+            .build()
+    } catch (e: Exception) {
+        Log.w("Auth", "Failed to build GetGoogleIdOption: ${e.message}")
+        onUnauthenticated()
+        return
+    }
 
     val request = GetCredentialRequest.Builder()
         .addCredentialOption(googleIdOption)
@@ -92,17 +135,23 @@ fun onGoogleSignInClicked(
     scope: CoroutineScope,
     onAuthCancelled: () -> Unit = {}
 ) {
-    val clientId = try {
-        context.getString(R.string.default_web_client_id)
-    } catch (_: Exception) {
-        ""
-    }
-    if (clientId.isBlank()) {
-        onAuthError("Google Sign-In configuration missing: google-services.json not configured")
+    if (!isFirebaseReady(context)) {
+        onAuthError("Firebase কনফিগারেশন (google-services.json) এই বিল্ডে নেই। লোকাল মোড ব্যবহার করুন অথবা google-services.json যোগ করুন।")
         return
     }
 
-    val signInOption = GetSignInWithGoogleOption.Builder(serverClientId = clientId).build()
+    val clientId = resolveWebClientId(context)
+    if (clientId.isBlank()) {
+        onAuthError("Google Sign-In কনফিগার করা নেই (default_web_client_id অনুপস্থিত)।")
+        return
+    }
+
+    val signInOption = try {
+        GetSignInWithGoogleOption.Builder(serverClientId = clientId).build()
+    } catch (e: Exception) {
+        onAuthError("Google Sign-In অপশন তৈরি করা যায়নি: ${e.localizedMessage ?: "Configuration error"}")
+        return
+    }
     val request = GetCredentialRequest.Builder()
         .addCredentialOption(signInOption)
         .build()
@@ -132,6 +181,7 @@ fun onGoogleSignInClicked(
 }
 
 fun signOutUser(
+    context: Context,
     credentialManager: CredentialManager,
     scope: CoroutineScope,
     onSignOutComplete: () -> Unit = {}
@@ -143,7 +193,13 @@ fun signOutUser(
             } catch (e: Exception) {
                 Log.w("Auth", "Failed to clear credential state: ${e.message}")
             } finally {
-                Firebase.auth.signOut()
+                try {
+                    if (isFirebaseReady(context)) {
+                        Firebase.auth.signOut()
+                    }
+                } catch (e: Exception) {
+                    Log.w("Auth", "Firebase signOut skipped: ${e.message}")
+                }
                 onSignOutComplete()
             }
         }

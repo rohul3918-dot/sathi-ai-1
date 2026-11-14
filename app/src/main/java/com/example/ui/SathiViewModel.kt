@@ -11,7 +11,7 @@ import com.example.data.model.ChatMessageRecord
 import com.example.data.model.DailyTask
 import com.example.data.model.DeviceActionLog
 import com.example.data.model.DevicePermissions
-import com.example.data.repository.SathiRepository
+import com.example.data.repository.SathiDataStore
 import com.example.device.DeviceActionOutcome
 import com.example.device.DeviceControlManager
 import com.example.device.VoiceAssistantManager
@@ -40,7 +40,7 @@ data class PendingPermissionPrompt(
 )
 
 class SathiViewModel(
-    private val repository: SathiRepository,
+    private val repository: SathiDataStore,
     private val aiEngine: SathiAiEngine,
     val deviceManager: DeviceControlManager,
     val voiceManager: VoiceAssistantManager,
@@ -172,7 +172,7 @@ class SathiViewModel(
                         clientOrder = baseOrder + 1
                     )
                     if (currentPerms.allowTtsSpeech) {
-                        voiceManager.speak(finalReply)
+                        voiceManager.speak(finalReply, currentPerms.voiceGender)
                     }
                 },
                 onFailure = { err ->
@@ -315,8 +315,9 @@ class SathiViewModel(
                 permissionLabelBn = "নোটিফিকেশন ও রিমাইন্ডার",
                 permissions = permissions
             ) {
+                val aiName = permissions.assistantName.ifBlank { "সাথী" }
                 deviceManager.postReminderNotification(
-                    directive.taskTitle.ifBlank { "Sathi AI রিমাইন্ডার" },
+                    directive.taskTitle.ifBlank { "$aiName রিমাইন্ডার" },
                     directive.paramText.ifBlank { directive.reply }
                 )
             }.let { Triple(it.first, it.second, it.third ?: directive.reply) }
@@ -401,6 +402,35 @@ class SathiViewModel(
         }
     }
 
+    fun updatePersonalization(
+        assistantName: String,
+        conversationStyle: String,
+        customStylePrompt: String,
+        voiceGender: String
+    ) {
+        val current = permissionsState.value
+        val cleanName = assistantName.trim().ifBlank { "সাথী" }.take(40)
+        val updated = current.copy(
+            assistantName = cleanName,
+            conversationStyle = conversationStyle,
+            customStylePrompt = customStylePrompt.trim().take(300),
+            voiceGender = voiceGender
+        )
+        viewModelScope.launch {
+            val res = repository.savePermissions(currentUserId, updated)
+            if (res.isSuccess) {
+                _statusBanner.value = "অ্যাসিস্ট্যান্ট সেটিংস সংরক্ষণ করা হয়েছে ✨"
+            } else {
+                _statusBanner.value = "সেটিংস সংরক্ষণ করা যায়নি।"
+            }
+        }
+    }
+
+    fun testAssistantVoice(voiceGender: String) {
+        val aiName = permissionsState.value.assistantName.ifBlank { "সাথী" }
+        voiceManager.testVoice(voiceGender, aiName)
+    }
+
     fun addOrUpdateTask(
         existing: DailyTask?,
         title: String,
@@ -444,10 +474,10 @@ class SathiViewModel(
 
     fun generateSmartPlan() {
         val currentTasks = (tasksState.value as? DataUiState.Success)?.data ?: emptyList()
-        val lang = permissionsState.value.assistantLanguage
+        val currentPerms = permissionsState.value
         viewModelScope.launch {
             _isGeneratingPlan.value = true
-            val res = aiEngine.generateSmartDayPlan(currentTasks, lang)
+            val res = aiEngine.generateSmartDayPlan(currentTasks, currentPerms)
             res.fold(
                 onSuccess = { _smartPlanText.value = it },
                 onFailure = { _statusBanner.value = it.localizedMessage ?: "রুটিন তৈরি করা যায়নি।" }
@@ -490,8 +520,9 @@ class SathiViewModel(
     }
 
     fun executeManualTestNotification() {
+        val aiName = permissionsState.value.assistantName.ifBlank { "সাথী" }
         val outcome = deviceManager.postReminderNotification(
-            "Sathi AI পরীক্ষা",
+            "$aiName পরীক্ষা",
             "আপনার নোটিফিকেশন রিমাইন্ডার সঠিকভাবে কাজ করছে।"
         )
         _statusBanner.value = outcome.summaryBn

@@ -111,8 +111,20 @@ test("Rejects shadow ghost field and invalid category on task create", async () 
 test("Authenticated user can manage permissions at settings/permissions only", async () => {
   const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
   const permRef = aliceDb.collection("users").doc(ALICE_UID).collection("settings").doc("permissions");
-  await assertSucceeds(permRef.set(validPermissionsPayload(ALICE_UID)));
-  await assertSucceeds(permRef.update({ allowFlashlight: true, updatedAt: new Date() }));
+  await assertSucceeds(permRef.set({
+    ...validPermissionsPayload(ALICE_UID),
+    assistantName: "Maya",
+    conversationStyle: "FRIENDLY",
+    customStylePrompt: "Be encouraging",
+    voiceGender: "FEMALE",
+  }));
+  await assertSucceeds(permRef.update({
+    allowFlashlight: true,
+    voiceGender: "MALE",
+    conversationStyle: "CONCISE",
+    updatedAt: new Date(),
+  }));
+  await assertFails(permRef.update({ voiceGender: "ROBOT", updatedAt: new Date() }));
 
   // Arbitrary doc ID rejected
   await assertFails(aliceDb.collection("users").doc(ALICE_UID).collection("settings").doc("other").set(validPermissionsPayload(ALICE_UID)));

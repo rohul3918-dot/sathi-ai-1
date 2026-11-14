@@ -16,10 +16,25 @@ private const val DEBUG_STORE_PREFIX = "com.google.firebase.appcheck.debug.store
 private const val DEBUG_SECRET_KEY = "com.google.firebase.appcheck.debug.DEBUG_SECRET"
 private const val RECAPTCHA_SITE_KEY_RES = "recaptcha_site_key"
 
+fun isFirebaseReady(context: Context): Boolean {
+    return try {
+        val appCtx = context.applicationContext ?: context
+        if (FirebaseApp.getApps(appCtx).isNotEmpty()) {
+            true
+        } else {
+            FirebaseApp.initializeApp(appCtx) != null
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "Firebase is not configured in this build: ${e.message}")
+        false
+    }
+}
+
 fun configureAppCheck(context: Context, intent: Intent?) {
     try {
-        if (FirebaseApp.getApps(context).isEmpty()) {
-            FirebaseApp.initializeApp(context)
+        if (!isFirebaseReady(context)) {
+            Log.w(TAG, "Skipping App Check setup because FirebaseApp is not initialized.")
+            return
         }
 
         if (BuildConfig.DEBUG) {
