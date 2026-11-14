@@ -49,6 +49,9 @@ fun attemptAutoSignIn(
     val clientId = try {
         context.getString(R.string.default_web_client_id)
     } catch (_: Exception) {
+        ""
+    }
+    if (clientId.isBlank()) {
         onUnauthenticated()
         return
     }
@@ -92,7 +95,10 @@ fun onGoogleSignInClicked(
     val clientId = try {
         context.getString(R.string.default_web_client_id)
     } catch (_: Exception) {
-        onAuthError("Google Sign-In configuration missing: default_web_client_id not found")
+        ""
+    }
+    if (clientId.isBlank()) {
+        onAuthError("Google Sign-In configuration missing: google-services.json not configured")
         return
     }
 

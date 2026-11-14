@@ -1,5 +1,6 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
 import java.time.Duration
+import java.util.Base64
 
 plugins {
   alias(libs.plugins.android.application)
@@ -21,6 +22,9 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    if (!file("google-services.json").exists()) {
+      resValue("string", "default_web_client_id", "")
+    }
   }
 
   // Do not remove or modify these signingConfigs. They are necessary for building, installing,
@@ -63,6 +67,7 @@ android {
   buildFeatures {
     compose = true
     buildConfig = true
+    resValues = true
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
   dependenciesInfo {
@@ -118,6 +123,59 @@ dependencies {
   androidTestImplementation(libs.androidx.runner)
   debugImplementation(libs.androidx.compose.ui.test.manifest)
   debugImplementation(libs.androidx.compose.ui.tooling)
+}
+
+abstract class EnsureDebugKeystoreTask : org.gradle.api.DefaultTask() {
+  @get:org.gradle.api.tasks.OutputFile
+  abstract val keystoreFile: org.gradle.api.file.RegularFileProperty
+
+  @get:org.gradle.api.tasks.InputFile
+  @get:org.gradle.api.tasks.Optional
+  abstract val base64File: org.gradle.api.file.RegularFileProperty
+
+  @org.gradle.api.tasks.TaskAction
+  fun ensure() {
+    val ks = keystoreFile.get().asFile
+    if (ks.exists()) return
+    val b64 = base64File.orNull?.asFile
+    if (b64 != null && b64.exists()) {
+      ks.writeBytes(Base64.getMimeDecoder().decode(b64.readText()))
+      return
+    }
+    val keytoolBin = File(System.getProperty("java.home"), "bin/keytool").let {
+      if (it.exists()) it.absolutePath else "keytool"
+    }
+    val process = ProcessBuilder(
+      keytoolBin,
+      "-genkeypair",
+      "-v",
+      "-keystore", ks.absolutePath,
+      "-storepass", "android",
+      "-alias", "androiddebugkey",
+      "-keypass", "android",
+      "-keyalg", "RSA",
+      "-keysize", "2048",
+      "-validity", "10000",
+      "-dname", "CN=Android Debug,O=Android,C=US"
+    ).redirectErrorStream(true).start()
+    val exitCode = process.waitFor()
+    if (exitCode != 0) {
+      val output = process.inputStream.bufferedReader().readText()
+      throw GradleException("Failed to generate debug.keystore: $output")
+    }
+  }
+}
+
+val ensureDebugKeystore = tasks.register<EnsureDebugKeystoreTask>("ensureDebugKeystore") {
+  keystoreFile.set(rootProject.file("debug.keystore"))
+  val b64 = rootProject.file("debug.keystore.base64")
+  if (b64.exists()) {
+    base64File.set(b64)
+  }
+}
+
+tasks.matching { it.name == "validateSigningDebug" }.configureEach {
+  dependsOn(ensureDebugKeystore)
 }
 
 tasks.withType<Test> {
