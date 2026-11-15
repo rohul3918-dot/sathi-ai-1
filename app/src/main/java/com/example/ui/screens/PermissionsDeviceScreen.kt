@@ -83,7 +83,7 @@ fun PermissionsDeviceScreen(
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
-    val firebaseReady = remember(context) { isFirebaseReady(context) }
+    val firebaseReady = isFirebaseReady(context)
 
     val perms by viewModel.permissionsState.collectAsStateWithLifecycle()
     val userProfile by viewModel.userProfileState.collectAsStateWithLifecycle()

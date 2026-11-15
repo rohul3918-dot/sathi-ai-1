@@ -107,7 +107,7 @@ class MainActivity : ComponentActivity() {
 fun AppNavigation() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val firebaseReady = remember(context) { isFirebaseReady(context) }
+    val firebaseReady = isFirebaseReady(context)
     val currentUser by remember(firebaseReady) {
         safeAuthStateFlow(context)
     }.collectAsStateWithLifecycle(initialValue = remember(firebaseReady) { safeCurrentUser(context) })
@@ -202,7 +202,7 @@ fun SathiHomeShell(
 
     val triggerGoogleSignIn: () -> Unit = {
         val cm = credentialManager
-        if (!firebaseReady) {
+        if (!isFirebaseReady(context)) {
             authErrorMessage = "এই বিল্ডে Firebase (google-services.json) সক্রিয় নেই।"
             viewModel.showMessage("Google Sign-In-এর জন্য Firebase কনফিগারেশন প্রয়োজন।")
             currentRoute = SathiRoute.SETTINGS

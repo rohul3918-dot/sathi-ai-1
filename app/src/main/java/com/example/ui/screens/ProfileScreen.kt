@@ -91,7 +91,7 @@ fun ProfileScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val firebaseReady = remember(context) { isFirebaseReady(context) }
+    val firebaseReady = isFirebaseReady(context)
 
     if (!isSignedIn) {
         UnauthenticatedProfilePrompt(

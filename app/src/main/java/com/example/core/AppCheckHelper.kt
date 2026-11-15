@@ -5,6 +5,7 @@ import android.content.Intent
 import android.util.Log
 import com.example.BuildConfig
 import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
 import com.google.firebase.appcheck.FirebaseAppCheck
 import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
 import com.google.firebase.appcheck.recaptcha.RecaptchaAppCheckProviderFactory
@@ -16,13 +17,56 @@ private const val DEBUG_STORE_PREFIX = "com.google.firebase.appcheck.debug.store
 private const val DEBUG_SECRET_KEY = "com.google.firebase.appcheck.debug.DEBUG_SECRET"
 private const val RECAPTCHA_SITE_KEY_RES = "recaptcha_site_key"
 
+internal fun resolveFirebaseResourceString(context: Context, resName: String): String {
+    val packagesToCheck = listOfNotNull(
+        context.packageName.takeIf { it.isNotBlank() },
+        BuildConfig.APPLICATION_ID.takeIf { it.isNotBlank() },
+        "com.example"
+    ).distinct()
+    for (pkg in packagesToCheck) {
+        val resId = context.resources.getIdentifier(resName, "string", pkg)
+        if (resId != 0) {
+            val value = runCatching { context.getString(resId).trim() }.getOrNull()
+            if (!value.isNullOrEmpty()) return value
+        }
+    }
+    return ""
+}
+
 fun isFirebaseReady(context: Context): Boolean {
     return try {
         val appCtx = context.applicationContext ?: context
         if (FirebaseApp.getApps(appCtx).isNotEmpty()) {
+            return true
+        }
+        if (FirebaseApp.initializeApp(appCtx) != null) {
+            return true
+        }
+        // Fallback: explicitly construct FirebaseOptions from generated google-services.json string resources
+        // in case FirebaseOptions.fromResource failed due to package-name resolution mismatch.
+        val appId = resolveFirebaseResourceString(appCtx, "google_app_id")
+        val apiKey = resolveFirebaseResourceString(appCtx, "google_api_key")
+        if (appId.isBlank() || apiKey.isBlank()) {
+            return false
+        }
+        val projectId = resolveFirebaseResourceString(appCtx, "project_id")
+        val senderId = resolveFirebaseResourceString(appCtx, "gcm_defaultSenderId")
+        val storageBucket = resolveFirebaseResourceString(appCtx, "google_storage_bucket")
+        val optionsBuilder = FirebaseOptions.Builder()
+            .setApplicationId(appId)
+            .setApiKey(apiKey)
+        if (projectId.isNotBlank()) optionsBuilder.setProjectId(projectId)
+        if (senderId.isNotBlank()) optionsBuilder.setGcmSenderId(senderId)
+        if (storageBucket.isNotBlank()) optionsBuilder.setStorageBucket(storageBucket)
+        FirebaseApp.initializeApp(appCtx, optionsBuilder.build())
+        FirebaseApp.getApps(appCtx).isNotEmpty()
+    } catch (e: IllegalStateException) {
+        val appCtx = context.applicationContext ?: context
+        if (FirebaseApp.getApps(appCtx).isNotEmpty()) {
             true
         } else {
-            FirebaseApp.initializeApp(appCtx) != null
+            Log.w(TAG, "Firebase initialization state error: ${e.message}")
+            false
         }
     } catch (e: Exception) {
         Log.w(TAG, "Firebase is not configured in this build: ${e.message}")
@@ -32,10 +76,8 @@ fun isFirebaseReady(context: Context): Boolean {
 
 fun firebaseUnavailableReason(context: Context): String {
     val appCtx = context.applicationContext ?: context
-    val appIdRes = appCtx.resources.getIdentifier("google_app_id", "string", appCtx.packageName)
-    val apiKeyRes = appCtx.resources.getIdentifier("google_api_key", "string", appCtx.packageName)
-    val hasAppId = appIdRes != 0 && appCtx.getString(appIdRes).isNotBlank()
-    val hasApiKey = apiKeyRes != 0 && appCtx.getString(apiKeyRes).isNotBlank()
+    val hasAppId = resolveFirebaseResourceString(appCtx, "google_app_id").isNotBlank()
+    val hasApiKey = resolveFirebaseResourceString(appCtx, "google_api_key").isNotBlank()
     return if (!hasAppId || !hasApiKey) {
         "এই বিল্ডে google-services.json যুক্ত নেই অথবা Firebase কনফিগারেশন অসম্পূর্ণ। সঠিক google-services.json দিয়ে অ্যাপটি পুনরায় বিল্ড করুন।"
     } else {

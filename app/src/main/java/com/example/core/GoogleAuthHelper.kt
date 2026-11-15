@@ -59,11 +59,13 @@ internal fun FirebaseAuth.authStateFlow(): Flow<FirebaseUser?> = callbackFlow {
 }
 
 private fun resolveWebClientId(context: Context): String {
-    return try {
+    val direct = try {
         context.getString(R.string.default_web_client_id).trim()
     } catch (_: Exception) {
         ""
     }
+    if (direct.isNotBlank()) return direct
+    return resolveFirebaseResourceString(context.applicationContext ?: context, "default_web_client_id")
 }
 
 fun attemptAutoSignIn(
