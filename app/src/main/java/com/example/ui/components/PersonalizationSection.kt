@@ -64,7 +64,10 @@ fun AccountStatusCard(
     onSignOut: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val resolvedName = userProfile.displayName.ifBlank { userDisplayName }
+    val resolvedName = userProfile.displayName.ifBlank {
+        userDisplayName.takeIf { it.isNotBlank() && it != "সাইন-ইন করুন" }.orEmpty()
+    }.ifBlank { "ব্যবহারকারী" }
+    val resolvedEmail = userProfile.email.ifBlank { userEmail.orEmpty() }
     val resolvedPhoto = userProfile.effectivePhotoUrl.ifBlank { photoUrl.orEmpty() }
 
     Surface(
@@ -87,7 +90,7 @@ fun AccountStatusCard(
                     ProfileAvatarImage(
                         photoUrl = resolvedPhoto,
                         displayName = resolvedName,
-                        modifier = Modifier.size(44.dp)
+                        modifier = Modifier.size(48.dp)
                     )
                 } else {
                     Icon(
@@ -97,23 +100,43 @@ fun AccountStatusCard(
                         modifier = Modifier.size(40.dp)
                     )
                 }
-                Column(modifier = Modifier.weight(1f)) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
                     Text(
                         text = if (isSignedIn) resolvedName else "Google অ্যাকাউন্ট ও প্রোফাইল",
                         style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
                         text = when {
                             isSignedIn && userProfile.nickname.isNotBlank() ->
-                                "${userProfile.nickname} • ${userEmail ?: "ক্লাউড সিঙ্ক সক্রিয়"}"
-                            isSignedIn -> userEmail ?: "ক্লাউড সিঙ্ক সক্রিয়"
+                                "ডাকনাম: ${userProfile.nickname} • ${resolvedEmail.ifBlank { "ক্লাউড সিঙ্ক সক্রিয়" }}"
+                            isSignedIn -> resolvedEmail.ifBlank { "ক্লাউড সিঙ্ক সক্রিয়" }
                             firebaseReady -> "কাজ, প্রোফাইল ও সেটিংস ক্লাউডে সিঙ্ক করতে Google দিয়ে সাইন-ইন করুন"
                             else -> "লোকাল প্রোফাইল সক্রিয় রয়েছে। ক্লাউড সিঙ্কের জন্য Firebase কনফিগারেশন প্রয়োজন।"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    if (isSignedIn && userProfile.bio.isNotBlank()) {
+                        Text(
+                            text = userProfile.bio,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2
+                        )
+                    }
+                    if (isSignedIn) {
+                        Text(
+                            text = "● Firestore ক্লাউড সিঙ্ক সক্রিয়",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = EmeraldSuccess
+                        )
+                    }
                 }
             }
 

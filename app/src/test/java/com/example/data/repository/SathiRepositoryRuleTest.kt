@@ -6,6 +6,7 @@ import com.example.data.model.UserProfile
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -185,6 +186,84 @@ class SathiRepositoryRuleTest : FirestoreEmulatorTestBase() {
         }
         assertTrue(writeRes.isFailure)
         val fsErr = writeRes.exceptionOrNull()?.unwrapFirestoreException()
+        assertEquals(FirebaseFirestoreException.Code.PERMISSION_DENIED, fsErr?.code)
+    }
+
+    @Test
+    fun syncSignedInUser_createsRootUserDocAndPreservesEditedProfile() = runBlocking {
+        val uid = signInTestUser(ALICE_EMAIL)
+        val repository = SathiRepository(firestore)
+
+        val syncRes = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repository.syncSignedInUser(
+                userId = uid,
+                displayName = "Ruhul Amin",
+                email = ALICE_EMAIL,
+                photoUrl = "https://example.com/ruhul.jpg"
+            )
+        }
+        assertTrue(syncRes.isSuccess)
+
+        val rootSnap = withTimeout(DEFAULT_TIMEOUT_MS) {
+            firestore.collection("users").document(uid).get().await()
+        }
+        assertTrue(rootSnap.exists())
+        assertEquals(uid, rootSnap.getString("uid"))
+        assertEquals("Ruhul Amin", rootSnap.getString("displayName"))
+        assertEquals(ALICE_EMAIL, rootSnap.getString("email"))
+        assertEquals("https://example.com/ruhul.jpg", rootSnap.getString("photoUrl"))
+
+        // User edits profile display name and nickname
+        val profile = withTimeout(FLOW_TIMEOUT_MS) {
+            repository.observeUserProfile(uid).first { it.displayName == "Ruhul Amin" }
+        }
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repository.saveUserProfile(
+                uid,
+                profile.copy(displayName = "Ruhul Custom", nickname = "ভাইয়া", bio = "Developer")
+            )
+        }.getOrThrow()
+
+        // Re-sync on next app launch updates users/{uid} without overwriting edited profile name
+        val resyncRes = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repository.syncSignedInUser(
+                userId = uid,
+                displayName = "Ruhul Google",
+                email = ALICE_EMAIL,
+                photoUrl = "https://example.com/ruhul_new.jpg"
+            )
+        }
+        assertTrue(resyncRes.isSuccess)
+
+        val updatedRoot = withTimeout(DEFAULT_TIMEOUT_MS) {
+            firestore.collection("users").document(uid).get().await()
+        }
+        assertEquals("Ruhul Google", updatedRoot.getString("displayName"))
+        assertEquals("https://example.com/ruhul_new.jpg", updatedRoot.getString("photoUrl"))
+
+        val reloadedProfile = withTimeout(FLOW_TIMEOUT_MS) {
+            repository.observeUserProfile(uid).first { it.googlePhotoUrl == "https://example.com/ruhul_new.jpg" }
+        }
+        assertEquals("Ruhul Custom", reloadedProfile.displayName)
+        assertEquals("ভাইয়া", reloadedProfile.nickname)
+    }
+
+    @Test
+    fun syncSignedInUser_crossUser_failsWithPermissionDenied() = runBlocking {
+        val aliceUid = signInTestUser(ALICE_EMAIL)
+        signInTestUser(BOB_EMAIL)
+        val bobRepo = SathiRepository(firestore)
+
+        val res = withTimeout(DEFAULT_TIMEOUT_MS) {
+            bobRepo.syncSignedInUser(
+                userId = aliceUid,
+                displayName = "Intruder",
+                email = BOB_EMAIL,
+                photoUrl = "https://example.com/evil.jpg"
+            )
+        }
+        assertTrue(res.isFailure)
+        val fsErr = res.exceptionOrNull()?.unwrapFirestoreException()
         assertEquals(FirebaseFirestoreException.Code.PERMISSION_DENIED, fsErr?.code)
     }
 

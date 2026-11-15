@@ -236,7 +236,7 @@ fun ProfileScreen(
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Text(
-                                text = displayNameInput.ifBlank { "ব্যবহারকারী" },
+                                text = displayNameInput.ifBlank { resolvedGoogleName }.ifBlank { "ব্যবহারকারী" },
                                 style = MaterialTheme.typography.titleLarge,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface,

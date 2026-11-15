@@ -20,6 +20,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.tasks.await
 
 interface SathiDataStore {
@@ -57,6 +58,12 @@ interface SathiDataStore {
     suspend fun clearMessages(userId: String): Result<Unit>
     fun observeUserProfile(userId: String): Flow<UserProfile>
     suspend fun saveUserProfile(userId: String, profile: UserProfile): Result<Unit>
+    suspend fun syncSignedInUser(
+        userId: String,
+        displayName: String,
+        email: String,
+        photoUrl: String
+    ): Result<Unit>
 }
 
 class SathiRepository(
@@ -84,6 +91,9 @@ class SathiRepository(
 
     private fun messagesCollection(userId: String) =
         db.collection("users").document(userId).collection("messages")
+
+    private fun userRootDoc(userId: String) =
+        db.collection("users").document(userId)
 
     private fun profileDoc(userId: String) =
         db.collection("users").document(userId).collection("profile").document("profile")
@@ -400,16 +410,26 @@ class SathiRepository(
         profileDoc(userId)
             .snapshots()
             .map { snapshot ->
+                val cached = localProfileCache?.load(userId)
                 if (snapshot.exists()) {
                     val remote = snapshot.toObject(
                         UserProfile::class.java,
                         DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
                     ) ?: UserProfile(userId = userId)
-                    localProfileCache?.save(userId, remote)
-                    remote
+                    val merged = remote.copy(
+                        userId = userId,
+                        displayName = remote.displayName.ifBlank { cached?.displayName.orEmpty() },
+                        email = remote.email.ifBlank { cached?.email.orEmpty() },
+                        googlePhotoUrl = remote.googlePhotoUrl.ifBlank { cached?.googlePhotoUrl.orEmpty() }
+                    )
+                    localProfileCache?.save(userId, merged)
+                    merged
                 } else {
-                    localProfileCache?.load(userId) ?: UserProfile(userId = userId)
+                    cached ?: UserProfile(userId = userId)
                 }
+            }
+            .onStart {
+                localProfileCache?.load(userId)?.let { emit(it) }
             }
             .catch { error ->
                 logFlowErrorIfFirestore(error, OperationType.GET, "users/$userId/profile/profile")
@@ -461,6 +481,91 @@ class SathiRepository(
             throw e
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.WRITE, docRef.path)
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun syncSignedInUser(
+        userId: String,
+        displayName: String,
+        email: String,
+        photoUrl: String
+    ): Result<Unit> {
+        val cleanName = displayName.trim().ifBlank { "Google User" }.take(80)
+        val cleanEmail = email.trim().take(120)
+        val cleanPhoto = photoUrl.trim().take(500)
+
+        val cached = localProfileCache?.load(userId) ?: UserProfile(userId = userId)
+        val localMerged = cached.copy(
+            userId = userId,
+            displayName = cached.displayName.ifBlank { cleanName }.take(80),
+            email = cleanEmail.ifBlank { cached.email }.take(120),
+            googlePhotoUrl = cleanPhoto.ifBlank { cached.googlePhotoUrl }.take(500)
+        )
+        localProfileCache?.save(userId, localMerged)
+
+        val rootRef = userRootDoc(userId)
+        val profRef = profileDoc(userId)
+        return try {
+            val rootSnap = rootRef.get().await()
+            if (!rootSnap.exists()) {
+                rootRef.set(
+                    mapOf(
+                        "uid" to userId,
+                        "displayName" to cleanName,
+                        "email" to cleanEmail,
+                        "photoUrl" to cleanPhoto,
+                        "createdAt" to FieldValue.serverTimestamp(),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            } else {
+                val mergedEmail = cleanEmail.ifBlank { rootSnap.getString("email").orEmpty() }
+                val mergedPhoto = cleanPhoto.ifBlank { rootSnap.getString("photoUrl").orEmpty() }
+                rootRef.update(
+                    mapOf(
+                        "displayName" to cleanName,
+                        "email" to mergedEmail,
+                        "photoUrl" to mergedPhoto,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
+
+            val profSnap = profRef.get().await()
+            if (!profSnap.exists()) {
+                profRef.set(
+                    mapOf(
+                        "userId" to userId,
+                        "displayName" to localMerged.displayName.ifBlank { cleanName },
+                        "nickname" to localMerged.nickname,
+                        "email" to cleanEmail,
+                        "bio" to localMerged.bio,
+                        "googlePhotoUrl" to cleanPhoto,
+                        "customPhotoUri" to localMerged.customPhotoUri,
+                        "createdAt" to FieldValue.serverTimestamp(),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            } else {
+                val existingName = profSnap.getString("displayName").orEmpty()
+                val resolvedName = existingName.ifBlank { cleanName }
+                val mergedEmail = cleanEmail.ifBlank { profSnap.getString("email").orEmpty() }
+                val mergedPhoto = cleanPhoto.ifBlank { profSnap.getString("googlePhotoUrl").orEmpty() }
+                profRef.update(
+                    mapOf(
+                        "displayName" to resolvedName,
+                        "email" to mergedEmail,
+                        "googlePhotoUrl" to mergedPhoto,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, rootRef.path)
             Result.failure(e)
         }
     }

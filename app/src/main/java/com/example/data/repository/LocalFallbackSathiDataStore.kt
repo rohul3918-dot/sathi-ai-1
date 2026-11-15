@@ -15,6 +15,54 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
+internal data class CachedAuthSession(
+    val uid: String = "",
+    val displayName: String = "",
+    val email: String = "",
+    val photoUrl: String = ""
+)
+
+internal class AuthSessionStore(context: Context) {
+    private val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    fun save(session: CachedAuthSession) {
+        if (session.uid.isBlank()) return
+        val o = JSONObject().apply {
+            put("uid", session.uid.trim())
+            put("displayName", session.displayName.trim())
+            put("email", session.email.trim())
+            put("photoUrl", session.photoUrl.trim())
+        }
+        prefs.edit().putString(KEY_ACTIVE_SESSION, o.toString()).commit()
+    }
+
+    fun load(): CachedAuthSession? {
+        return try {
+            val raw = prefs.getString(KEY_ACTIVE_SESSION, null) ?: return null
+            val o = JSONObject(raw)
+            val uid = o.optString("uid", "").trim()
+            if (uid.isEmpty()) return null
+            CachedAuthSession(
+                uid = uid,
+                displayName = o.optString("displayName", ""),
+                email = o.optString("email", ""),
+                photoUrl = o.optString("photoUrl", "")
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun clear() {
+        prefs.edit().remove(KEY_ACTIVE_SESSION).commit()
+    }
+
+    private companion object {
+        const val PREFS_NAME = "sathi_auth_session"
+        const val KEY_ACTIVE_SESSION = "active_user_session"
+    }
+}
+
 internal class LocalProfileCache(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
@@ -46,7 +94,7 @@ internal class LocalProfileCache(context: Context) {
             put("googlePhotoUrl", profile.googlePhotoUrl)
             put("customPhotoUri", profile.customPhotoUri)
         }
-        prefs.edit().putString("$KEY_PREFIX$userId", o.toString()).apply()
+        prefs.edit().putString("$KEY_PREFIX$userId", o.toString()).commit()
     }
 
     private companion object {
@@ -225,6 +273,25 @@ class LocalFallbackSathiDataStore(context: Context) : SathiDataStore {
         )
         profileCache.save(userId, sanitized)
         profilesFlow.value = profilesFlow.value + (userId to sanitized)
+        return Result.success(Unit)
+    }
+
+    override suspend fun syncSignedInUser(
+        userId: String,
+        displayName: String,
+        email: String,
+        photoUrl: String
+    ): Result<Unit> {
+        val existing = profilesFlow.value[userId] ?: profileCache.load(userId) ?: UserProfile(userId = userId)
+        val merged = existing.copy(
+            userId = userId,
+            displayName = existing.displayName.ifBlank { displayName.trim() }.take(80),
+            email = email.trim().ifBlank { existing.email }.take(120),
+            googlePhotoUrl = photoUrl.trim().ifBlank { existing.googlePhotoUrl }.take(500),
+            updatedAt = Timestamp.now()
+        )
+        profileCache.save(userId, merged)
+        profilesFlow.value = profilesFlow.value + (userId to merged)
         return Result.success(Unit)
     }
 

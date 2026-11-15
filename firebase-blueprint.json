@@ -103,6 +103,20 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["userId", "displayName", "createdAt", "updatedAt"]
+    },
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Authenticated user account snapshot synced on Google Sign-In.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -121,6 +135,10 @@
     "/users/{userId}/messages/{messageId}": {
       "schema": { "$ref": "#/entities/ChatMessageRecord" },
       "description": "Conversation history with AI assistant"
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserAccount" },
+      "description": "Signed-in user's core account identity synced on login"
     },
     "/users/{userId}/profile/{profileId}": {
       "schema": { "$ref": "#/entities/UserProfile" },

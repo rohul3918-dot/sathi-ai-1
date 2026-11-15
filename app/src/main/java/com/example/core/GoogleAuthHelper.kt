@@ -2,13 +2,20 @@ package com.example.core
 
 import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.util.Log
 import androidx.credentials.ClearCredentialStateRequest
 import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
+import androidx.credentials.exceptions.NoCredentialException
 import com.example.R
+import com.example.data.model.UserProfile
+import com.example.data.repository.AuthSessionStore
+import com.example.data.repository.CachedAuthSession
+import com.example.data.repository.LocalProfileCache
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
@@ -27,6 +34,46 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+internal fun persistAuthenticatedUserSnapshot(context: Context, user: FirebaseUser) {
+    val appCtx = context.applicationContext ?: context
+    val sessionStore = AuthSessionStore(appCtx)
+    val existingSession = sessionStore.load()?.takeIf { it.uid == user.uid }
+    val resolvedName = user.displayName.orEmpty().trim()
+        .ifBlank { existingSession?.displayName.orEmpty() }
+        .ifBlank { user.email?.substringBefore("@").orEmpty() }
+    val resolvedEmail = user.email.orEmpty().trim()
+        .ifBlank { existingSession?.email.orEmpty() }
+    val resolvedPhoto = user.photoUrl?.toString().orEmpty().trim()
+        .ifBlank { existingSession?.photoUrl.orEmpty() }
+
+    sessionStore.save(
+        CachedAuthSession(
+            uid = user.uid,
+            displayName = resolvedName,
+            email = resolvedEmail,
+            photoUrl = resolvedPhoto
+        )
+    )
+
+    val profileCache = LocalProfileCache(appCtx)
+    val existingProfile = profileCache.load(user.uid) ?: UserProfile(userId = user.uid)
+    profileCache.save(
+        user.uid,
+        existingProfile.copy(
+            userId = user.uid,
+            displayName = existingProfile.displayName.ifBlank { resolvedName },
+            email = resolvedEmail.ifBlank { existingProfile.email },
+            googlePhotoUrl = resolvedPhoto.ifBlank { existingProfile.googlePhotoUrl }
+        )
+    )
+}
 
 fun safeCurrentUser(context: Context): FirebaseUser? {
     return try {
@@ -118,7 +165,8 @@ fun attemptAutoSignIn(
             if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                 val googleIdToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
                 val authCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
-                Firebase.auth.signInWithCredential(authCredential).await()
+                val authResult = Firebase.auth.signInWithCredential(authCredential).await()
+                authResult.user?.let { persistAuthenticatedUserSnapshot(context, it) }
                 onAuthSuccess()
             } else {
                 onUnauthenticated()
@@ -148,6 +196,12 @@ fun onGoogleSignInClicked(
         return
     }
 
+    val activityContext = context.findActivity()
+    if (activityContext == null) {
+        onAuthError("Google Sign-In চালু করতে অ্যাক্টিভিটি কনটেক্সট পাওয়া যায়নি।")
+        return
+    }
+
     val signInOption = try {
         GetSignInWithGoogleOption.Builder(serverClientId = clientId).build()
     } catch (e: Exception) {
@@ -160,21 +214,29 @@ fun onGoogleSignInClicked(
 
     scope.launch {
         try {
-            val activityContext = context as? Activity
-                ?: throw IllegalStateException("Google Sign-In requires an Activity context.")
             val result = credentialManager.getCredential(activityContext, request)
             val credential = result.credential
             if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
                 val googleIdToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
                 val authCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
-                Firebase.auth.signInWithCredential(authCredential).await()
+                val authResult = Firebase.auth.signInWithCredential(authCredential).await()
+                val signedInUser = authResult.user ?: Firebase.auth.currentUser
+                if (signedInUser != null) {
+                    persistAuthenticatedUserSnapshot(activityContext, signedInUser)
+                }
                 onAuthSuccess()
             } else {
-                onAuthError("Unexpected credential type")
+                onAuthError("অপ্রত্যাশিত ক্রেডেনশিয়াল পাওয়া গেছে। আবার চেষ্টা করুন।")
             }
         } catch (e: GetCredentialCancellationException) {
             Log.w("Auth", "Google Sign-In flow cancelled or dismissed: ${e.message}", e)
             onAuthCancelled()
+        } catch (e: NoCredentialException) {
+            Log.w("Auth", "No Google credentials available on device: ${e.message}", e)
+            onAuthError("এই ডিভাইসে কোনো Google অ্যাকাউন্ট পাওয়া যায়নি বা SHA-1 কনফিগারেশন বাকি আছে।")
+        } catch (e: GetCredentialException) {
+            Log.e("Auth", "Credential Manager error during Google Sign-In", e)
+            onAuthError(e.localizedMessage ?: "Google Sign-In ব্যর্থ হয়েছে।")
         } catch (e: Exception) {
             Log.e("Auth", "Google Sign-In failed", e)
             onAuthError(e.localizedMessage ?: "Sign in failed")
@@ -190,6 +252,7 @@ fun signOutUser(
 ) {
     scope.launch {
         withContext(NonCancellable) {
+            AuthSessionStore(context.applicationContext ?: context).clear()
             try {
                 credentialManager.clearCredentialState(ClearCredentialStateRequest())
             } catch (e: Exception) {

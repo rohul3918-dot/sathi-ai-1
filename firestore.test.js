@@ -203,3 +203,33 @@ test("Authenticated user can manage own profile/profile only with valid fields",
     updatedAt: new Date(),
   }));
 });
+
+test("Authenticated user can sync own users/{uid} document and cannot access others", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const userRef = aliceDb.collection("users").doc(ALICE_UID);
+  const now = new Date();
+
+  await assertSucceeds(userRef.set({
+    uid: ALICE_UID,
+    displayName: "Ruhul Amin",
+    email: "ruhul@example.com",
+    photoUrl: "https://example.com/photo.jpg",
+    createdAt: now,
+    updatedAt: now,
+  }));
+
+  await assertSucceeds(userRef.get());
+  await assertSucceeds(userRef.update({
+    displayName: "Ruhul Updated",
+    updatedAt: new Date(),
+  }));
+
+  await assertFails(aliceDb.collection("users").get());
+
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  await assertFails(bobDb.collection("users").doc(ALICE_UID).get());
+  await assertFails(bobDb.collection("users").doc(ALICE_UID).update({
+    displayName: "Hijack",
+    updatedAt: new Date(),
+  }));
+});

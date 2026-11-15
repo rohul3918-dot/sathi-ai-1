@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -23,6 +24,7 @@ import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.RecordVoiceOver
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -61,11 +63,15 @@ import com.example.core.attemptAutoSignIn
 import com.example.core.configureAppCheck
 import com.example.core.isFirebaseReady
 import com.example.core.onGoogleSignInClicked
+import com.example.core.persistAuthenticatedUserSnapshot
 import com.example.core.safeAuthStateFlow
 import com.example.core.safeCurrentUser
 import com.example.core.signOutUser
+import com.example.data.model.UserProfile
 import com.example.data.model.VoicePersona
+import com.example.data.repository.AuthSessionStore
 import com.example.data.repository.LocalFallbackSathiDataStore
+import com.example.data.repository.LocalProfileCache
 import com.example.data.repository.SathiDataStore
 import com.example.data.repository.SathiRepository
 import com.example.device.DeviceControlManager
@@ -108,9 +114,18 @@ fun AppNavigation() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val firebaseReady = isFirebaseReady(context)
+    val sessionStore = remember(context) {
+        AuthSessionStore(context.applicationContext ?: context)
+    }
+    var cachedSession by remember(context) {
+        mutableStateOf(sessionStore.load())
+    }
     val currentUser by remember(firebaseReady) {
         safeAuthStateFlow(context)
     }.collectAsStateWithLifecycle(initialValue = remember(firebaseReady) { safeCurrentUser(context) })
+
+    // Lift route state above key(accountKey) so signing in/out keeps the user on their current screen (e.g. Profile/Settings).
+    var currentRoute by rememberSaveable { mutableStateOf(SathiRoute.CHAT) }
 
     LaunchedEffect(firebaseReady) {
         if (firebaseReady && safeCurrentUser(context) == null) {
@@ -118,7 +133,9 @@ fun AppNavigation() {
                 attemptAutoSignIn(
                     context = context,
                     credentialManager = cm,
-                    onAuthSuccess = {},
+                    onAuthSuccess = {
+                        cachedSession = sessionStore.load()
+                    },
                     onUnauthenticated = {},
                     scope = scope
                 )
@@ -130,29 +147,64 @@ fun AppNavigation() {
     val isSignedIn = firebaseReady && user != null
     val accountKey = if (isSignedIn) user!!.uid else "local_device_profile"
 
+    LaunchedEffect(user?.uid, user?.displayName, user?.email, user?.photoUrl) {
+        if (user != null && firebaseReady) {
+            persistAuthenticatedUserSnapshot(context, user)
+            cachedSession = sessionStore.load()
+        }
+    }
+
+    val activeCachedSession = cachedSession?.takeIf { user != null && it.uid == user.uid }
+    val resolvedDisplayName = if (isSignedIn) {
+        user?.displayName.orEmpty().trim()
+            .ifBlank { activeCachedSession?.displayName.orEmpty() }
+            .ifBlank { user?.email?.substringBefore("@").orEmpty() }
+            .ifBlank { "ব্যবহারকারী" }
+    } else {
+        "সাইন-ইন করুন"
+    }
+    val resolvedEmail = if (isSignedIn) {
+        user?.email.orEmpty().trim()
+            .ifBlank { activeCachedSession?.email.orEmpty() }
+            .ifBlank { null }
+    } else {
+        null
+    }
+    val resolvedPhotoUrl = if (isSignedIn) {
+        user?.photoUrl?.toString().orEmpty().trim()
+            .ifBlank { activeCachedSession?.photoUrl.orEmpty() }
+            .ifBlank { null }
+    } else {
+        null
+    }
+
     // Open directly into clean AI chat UI without blocking startup.
     // Firestore is ONLY accessed when Google Sign-In has completed (isSignedIn == true).
     key(accountKey) {
         SathiHomeShell(
             currentUserId = accountKey,
             isSignedIn = isSignedIn,
-            userDisplayName = if (isSignedIn) (user?.displayName ?: user?.email ?: "ব্যবহারকারী") else "সাইন-ইন করুন",
-            userEmail = if (isSignedIn) user?.email else null,
-            userPhotoUrl = if (isSignedIn) user?.photoUrl?.toString() else null,
-            firebaseReady = firebaseReady
+            userDisplayName = resolvedDisplayName,
+            userEmail = resolvedEmail,
+            userPhotoUrl = resolvedPhotoUrl,
+            firebaseReady = firebaseReady,
+            currentRoute = currentRoute,
+            onRouteChange = { currentRoute = it }
         )
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SathiHomeShell(
+private fun SathiHomeShell(
     currentUserId: String,
     isSignedIn: Boolean,
     userDisplayName: String,
     userEmail: String?,
     userPhotoUrl: String?,
-    firebaseReady: Boolean
+    firebaseReady: Boolean,
+    currentRoute: SathiRoute,
+    onRouteChange: (SathiRoute) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -174,18 +226,30 @@ fun SathiHomeShell(
                 } else {
                     LocalFallbackSathiDataStore(app)
                 }
+                val cachedProfile = LocalProfileCache(app).load(currentUserId)
+                val fallbackName = userDisplayName.takeIf {
+                    it.isNotBlank() && it != "সাইন-ইন করুন"
+                }.orEmpty()
+                val seededProfile = (cachedProfile ?: UserProfile(userId = currentUserId)).let { base ->
+                    base.copy(
+                        userId = currentUserId,
+                        displayName = base.displayName.ifBlank { fallbackName },
+                        email = base.email.ifBlank { userEmail.orEmpty() },
+                        googlePhotoUrl = base.googlePhotoUrl.ifBlank { userPhotoUrl.orEmpty() }
+                    )
+                }
                 SathiViewModel(
                     repository = store,
                     aiEngine = SathiAiEngine(app),
                     deviceManager = DeviceControlManager(app),
                     voiceManager = VoiceAssistantManager(app),
-                    currentUserId = currentUserId
+                    currentUserId = currentUserId,
+                    initialUserProfile = seededProfile
                 )
             }
         }
     )
 
-    var currentRoute by rememberSaveable { mutableStateOf(SathiRoute.CHAT) }
     var showPersonaSheet by remember { mutableStateOf(false) }
     var isSigningIn by remember { mutableStateOf(false) }
     var authErrorMessage by remember { mutableStateOf<String?>(null) }
@@ -195,40 +259,55 @@ fun SathiHomeShell(
     val statusBanner by viewModel.statusBanner.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
+    LaunchedEffect(currentUserId, isSignedIn, userDisplayName, userEmail, userPhotoUrl) {
+        if (isSignedIn) {
+            val safeName = userDisplayName.takeIf {
+                it.isNotBlank() && it != "সাইন-ইন করুন"
+            }.orEmpty()
+            viewModel.syncSignedInUserIdentity(
+                displayName = safeName,
+                email = userEmail.orEmpty(),
+                photoUrl = userPhotoUrl.orEmpty()
+            )
+        }
+    }
+
     val aiName = permissions.assistantName.ifBlank { "সাথী" }
     val activePersona = VoicePersona.fromKey(permissions.voicePersona, permissions.voiceGender)
     val effectiveProfileName = userProfile.displayName.ifBlank { userDisplayName }
     val effectiveProfilePhoto = userProfile.effectivePhotoUrl.ifBlank { userPhotoUrl.orEmpty() }
 
     val triggerGoogleSignIn: () -> Unit = {
-        val cm = credentialManager
-        if (!isFirebaseReady(context)) {
-            authErrorMessage = "এই বিল্ডে Firebase (google-services.json) সক্রিয় নেই।"
-            viewModel.showMessage("Google Sign-In-এর জন্য Firebase কনফিগারেশন প্রয়োজন।")
-            currentRoute = SathiRoute.SETTINGS
-        } else if (cm == null) {
-            authErrorMessage = "এই ডিভাইসে Credential Manager পাওয়া যায়নি।"
-            viewModel.showMessage("Credential Manager পাওয়া যায়নি।")
-        } else {
-            authErrorMessage = null
-            isSigningIn = true
-            onGoogleSignInClicked(
-                context = context,
-                credentialManager = cm,
-                onAuthSuccess = {
-                    isSigningIn = false
-                    viewModel.showMessage("Google সাইন-ইন সম্পন্ন হয়েছে ✨")
-                },
-                onAuthError = { msg ->
-                    isSigningIn = false
-                    authErrorMessage = msg
-                    viewModel.showMessage(msg)
-                },
-                scope = scope,
-                onAuthCancelled = {
-                    isSigningIn = false
-                }
-            )
+        if (!isSigningIn) {
+            val cm = credentialManager
+            if (!isFirebaseReady(context)) {
+                authErrorMessage = "এই বিল্ডে Firebase (google-services.json) সক্রিয় নেই।"
+                viewModel.showMessage("Google Sign-In-এর জন্য Firebase কনফিগারেশন প্রয়োজন।")
+                onRouteChange(SathiRoute.SETTINGS)
+            } else if (cm == null) {
+                authErrorMessage = "এই ডিভাইসে Credential Manager পাওয়া যায়নি।"
+                viewModel.showMessage("Credential Manager পাওয়া যায়নি।")
+            } else {
+                authErrorMessage = null
+                isSigningIn = true
+                onGoogleSignInClicked(
+                    context = context,
+                    credentialManager = cm,
+                    onAuthSuccess = {
+                        isSigningIn = false
+                        viewModel.showMessage("Google সাইন-ইন সম্পন্ন হয়েছে ✨")
+                    },
+                    onAuthError = { msg ->
+                        isSigningIn = false
+                        authErrorMessage = msg
+                        viewModel.showMessage(msg)
+                    },
+                    scope = scope,
+                    onAuthCancelled = {
+                        isSigningIn = false
+                    }
+                )
+            }
         }
     }
 
@@ -254,7 +333,7 @@ fun SathiHomeShell(
 
     if (currentRoute != SathiRoute.CHAT) {
         BackHandler {
-            currentRoute = SathiRoute.CHAT
+            onRouteChange(SathiRoute.CHAT)
         }
     }
 
@@ -288,7 +367,8 @@ fun SathiHomeShell(
                                     style = MaterialTheme.typography.titleLarge,
                                     fontWeight = FontWeight.Bold,
                                     maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
                                 )
                                 Surface(
                                     shape = RoundedCornerShape(14.dp),
@@ -297,7 +377,7 @@ fun SathiHomeShell(
                                     modifier = Modifier.testTag("active_voice_persona_chip")
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                                     ) {
@@ -311,7 +391,8 @@ fun SathiHomeShell(
                                             text = activePersona.shortLabel,
                                             style = MaterialTheme.typography.labelMedium,
                                             fontWeight = FontWeight.SemiBold,
-                                            maxLines = 1
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                         Icon(
                                             imageVector = Icons.Rounded.KeyboardArrowDown,
@@ -324,7 +405,7 @@ fun SathiHomeShell(
                         },
                         actions = {
                             IconButton(
-                                onClick = { currentRoute = SathiRoute.TASKS },
+                                onClick = { onRouteChange(SathiRoute.TASKS) },
                                 modifier = Modifier.testTag("nav_tasks_button")
                             ) {
                                 Icon(
@@ -333,20 +414,42 @@ fun SathiHomeShell(
                                 )
                             }
                             if (isSignedIn) {
-                                IconButton(
-                                    onClick = { currentRoute = SathiRoute.PROFILE },
-                                    modifier = Modifier.testTag("header_auth_button")
+                                val topBarUserName = effectiveProfileName
+                                    .takeIf { it.isNotBlank() && it != "সাইন-ইন করুন" }
+                                    ?: userProfile.nickname.ifBlank { "প্রোফাইল" }
+                                Surface(
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+                                    onClick = { onRouteChange(SathiRoute.PROFILE) },
+                                    modifier = Modifier
+                                        .padding(end = 2.dp)
+                                        .testTag("header_auth_button")
                                 ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(30.dp)
-                                            .border(1.5.dp, EmeraldSuccess, CircleShape)
-                                            .padding(1.5.dp)
+                                    Row(
+                                        modifier = Modifier.padding(start = 4.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
-                                        ProfileAvatarImage(
-                                            photoUrl = effectiveProfilePhoto,
-                                            displayName = effectiveProfileName,
-                                            modifier = Modifier.fillMaxSize()
+                                        Box(
+                                            modifier = Modifier
+                                                .size(24.dp)
+                                                .border(1.5.dp, EmeraldSuccess, CircleShape)
+                                                .padding(1.5.dp)
+                                        ) {
+                                            ProfileAvatarImage(
+                                                photoUrl = effectiveProfilePhoto,
+                                                displayName = topBarUserName,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                        }
+                                        Text(
+                                            text = topBarUserName,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.widthIn(max = 84.dp)
                                         )
                                     }
                                 }
@@ -354,7 +457,8 @@ fun SathiHomeShell(
                                 Surface(
                                     shape = RoundedCornerShape(12.dp),
                                     color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f),
-                                    onClick = { currentRoute = SathiRoute.PROFILE },
+                                    onClick = triggerGoogleSignIn,
+                                    enabled = !isSigningIn,
                                     modifier = Modifier
                                         .padding(end = 2.dp)
                                         .testTag("header_auth_button")
@@ -364,23 +468,37 @@ fun SathiHomeShell(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Outlined.AccountCircle,
-                                            contentDescription = "Google Sign-In",
-                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Text(
-                                            text = "Sign In",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                                        )
+                                        if (isSigningIn) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(14.dp),
+                                                strokeWidth = 2.dp,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                            )
+                                            Text(
+                                                text = "Signing in...",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = Icons.Outlined.AccountCircle,
+                                                contentDescription = "Google Sign-In",
+                                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Text(
+                                                text = "Sign In",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                            )
+                                        }
                                     }
                                 }
                             }
                             IconButton(
-                                onClick = { currentRoute = SathiRoute.SETTINGS },
+                                onClick = { onRouteChange(SathiRoute.SETTINGS) },
                                 modifier = Modifier.testTag("nav_settings_button")
                             ) {
                                 Icon(
@@ -397,7 +515,7 @@ fun SathiHomeShell(
                 SathiRoute.TASKS -> {
                     TopAppBar(
                         navigationIcon = {
-                            IconButton(onClick = { currentRoute = SathiRoute.CHAT }) {
+                            IconButton(onClick = { onRouteChange(SathiRoute.CHAT) }) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
                                     contentDescription = "চ্যাটে ফিরুন"
@@ -408,7 +526,7 @@ fun SathiHomeShell(
                             Text("দৈনন্দিন কাজ ও রুটিন", style = MaterialTheme.typography.titleLarge)
                         },
                         actions = {
-                            IconButton(onClick = { currentRoute = SathiRoute.SETTINGS }) {
+                            IconButton(onClick = { onRouteChange(SathiRoute.SETTINGS) }) {
                                 Icon(
                                     imageVector = Icons.Outlined.Settings,
                                     contentDescription = "সেটিংস"
@@ -423,7 +541,7 @@ fun SathiHomeShell(
                 SathiRoute.SETTINGS -> {
                     TopAppBar(
                         navigationIcon = {
-                            IconButton(onClick = { currentRoute = SathiRoute.CHAT }) {
+                            IconButton(onClick = { onRouteChange(SathiRoute.CHAT) }) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
                                     contentDescription = "চ্যাটে ফিরুন"
@@ -441,7 +559,7 @@ fun SathiHomeShell(
                 SathiRoute.PROFILE -> {
                     TopAppBar(
                         navigationIcon = {
-                            IconButton(onClick = { currentRoute = SathiRoute.CHAT }) {
+                            IconButton(onClick = { onRouteChange(SathiRoute.CHAT) }) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
                                     contentDescription = "চ্যাটে ফিরুন"
@@ -453,7 +571,7 @@ fun SathiHomeShell(
                         },
                         actions = {
                             IconButton(
-                                onClick = { currentRoute = SathiRoute.SETTINGS },
+                                onClick = { onRouteChange(SathiRoute.SETTINGS) },
                                 modifier = Modifier.testTag("profile_to_settings_button")
                             ) {
                                 Icon(
@@ -478,7 +596,7 @@ fun SathiHomeShell(
             when (currentRoute) {
                 SathiRoute.CHAT -> AssistantChatScreen(
                     viewModel = viewModel,
-                    onNavigateToSettings = { currentRoute = SathiRoute.SETTINGS }
+                    onNavigateToSettings = { onRouteChange(SathiRoute.SETTINGS) }
                 )
                 SathiRoute.TASKS -> TasksScreen(viewModel = viewModel)
                 SathiRoute.SETTINGS -> PermissionsDeviceScreen(
@@ -489,7 +607,7 @@ fun SathiHomeShell(
                     userPhotoUrl = userPhotoUrl,
                     isSigningIn = isSigningIn,
                     authErrorMessage = authErrorMessage,
-                    onOpenProfile = { currentRoute = SathiRoute.PROFILE },
+                    onOpenProfile = { onRouteChange(SathiRoute.PROFILE) },
                     onGoogleSignIn = triggerGoogleSignIn,
                     onSignOut = triggerSignOut
                 )

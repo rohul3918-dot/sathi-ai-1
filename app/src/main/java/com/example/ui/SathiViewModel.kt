@@ -56,7 +56,8 @@ class SathiViewModel(
     private val aiEngine: SathiAiEngine,
     val deviceManager: DeviceControlManager,
     val voiceManager: VoiceAssistantManager,
-    private val currentUserId: String
+    private val currentUserId: String,
+    initialUserProfile: UserProfile = UserProfile(userId = currentUserId)
 ) : ViewModel() {
 
     val tasksState: StateFlow<DataUiState<List<DailyTask>>> =
@@ -109,12 +110,12 @@ class SathiViewModel(
             .catch { error ->
                 if (error is CancellationException) throw error
                 Log.w(TAG, "Failed to observe user profile", error)
-                emit(UserProfile(userId = currentUserId))
+                emit(initialUserProfile)
             }
             .stateIn(
                 viewModelScope,
                 SharingStarted.WhileSubscribed(5000L),
-                UserProfile(userId = currentUserId)
+                initialUserProfile
             )
 
     val listeningState: StateFlow<VoiceListeningState> = voiceManager.listeningState
@@ -622,6 +623,24 @@ class SathiViewModel(
                 _statusBanner.value = "প্রোফাইল সংরক্ষণ করা যায়নি। আবার চেষ্টা করুন।"
             }
             _isSavingProfile.value = false
+        }
+    }
+
+    fun syncSignedInUserIdentity(
+        displayName: String,
+        email: String,
+        photoUrl: String
+    ) {
+        viewModelScope.launch {
+            val res = repository.syncSignedInUser(
+                userId = currentUserId,
+                displayName = displayName,
+                email = email,
+                photoUrl = photoUrl
+            )
+            if (res.isFailure) {
+                Log.w(TAG, "Firestore user sync deferred: ${res.exceptionOrNull()?.message}")
+            }
         }
     }
 

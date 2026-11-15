@@ -93,7 +93,31 @@ service cloud.firestore {
              (!('customPhotoUri' in data) || (data.customPhotoUri is string && data.customPhotoUri.size() <= 500));
     }
 
+    function isValidUserAccount(data, userId) {
+      return data.uid is string &&
+             data.uid == userId &&
+             data.displayName is string && data.displayName.size() <= 80 &&
+             (!('email' in data) || (data.email is string && data.email.size() <= 120)) &&
+             (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 500));
+    }
+
     match /users/{userId} {
+      allow list: if false;
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) &&
+                       incoming().keys().hasAll(['uid', 'displayName', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['uid', 'displayName', 'email', 'photoUrl', 'createdAt', 'updatedAt']) &&
+                       isValidUserAccount(incoming(), userId) &&
+                       isValidTimestamp(incoming().createdAt) &&
+                       isValidTimestamp(incoming().updatedAt);
+      allow update: if isOwner(userId) &&
+                       isValidUserAccount(incoming(), userId) &&
+                       incoming().uid == existing().uid &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidTimestamp(incoming().updatedAt) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'photoUrl', 'updatedAt']);
+      allow delete: if isOwner(userId);
+
       match /tasks/{taskId} {
         allow list: if isOwner(userId);
         allow get: if isOwner(userId) && isValidId(taskId);
