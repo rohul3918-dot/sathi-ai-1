@@ -1,7 +1,7 @@
 {
   "firestore": [
     {
-      "database": "ai-studio-android-sathiai-712245d6-0db2-46f9-8b83-fa96aec24a45",
+      "database": "(default)",
       "rules": "firestore.rules"
     }
   ],

@@ -2,6 +2,7 @@ package com.example.ai
 
 import android.content.Context
 import android.util.Log
+import com.example.core.firebaseUnavailableReason
 import com.example.core.isFirebaseReady
 import com.example.data.model.ChatMessageRecord
 import com.example.data.model.ConversationStyle
@@ -232,7 +233,7 @@ class SathiAiEngine(private val context: Context) {
 
         if (!isFirebaseReady(context)) {
             return Result.failure(
-                IllegalStateException("অনলাইন AI সেবা এই বিল্ডে প্রস্তুত নয়। অনুগ্রহ করে পরে আবার চেষ্টা করুন।")
+                IllegalStateException(firebaseUnavailableReason(context))
             )
         }
 
@@ -405,7 +406,7 @@ class SathiAiEngine(private val context: Context) {
 
         if (!isFirebaseReady(context)) {
             return Result.failure(
-                IllegalStateException("অনলাইন AI সেবা এই বিল্ডে প্রস্তুত নয়।")
+                IllegalStateException(firebaseUnavailableReason(context))
             )
         }
 

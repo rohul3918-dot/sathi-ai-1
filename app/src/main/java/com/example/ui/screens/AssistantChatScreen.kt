@@ -77,6 +77,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
@@ -330,9 +331,11 @@ fun AssistantChatScreen(
                     onValueChange = { inputText = it },
                     placeholder = {
                         Text(
-                            text = "$aiName-কে কিছু জিজ্ঞাসা করুন...",
+                            text = "$aiName-কে লিখুন...",
                             style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     },
                     singleLine = false,

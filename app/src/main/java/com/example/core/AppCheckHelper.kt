@@ -30,6 +30,19 @@ fun isFirebaseReady(context: Context): Boolean {
     }
 }
 
+fun firebaseUnavailableReason(context: Context): String {
+    val appCtx = context.applicationContext ?: context
+    val appIdRes = appCtx.resources.getIdentifier("google_app_id", "string", appCtx.packageName)
+    val apiKeyRes = appCtx.resources.getIdentifier("google_api_key", "string", appCtx.packageName)
+    val hasAppId = appIdRes != 0 && appCtx.getString(appIdRes).isNotBlank()
+    val hasApiKey = apiKeyRes != 0 && appCtx.getString(apiKeyRes).isNotBlank()
+    return if (!hasAppId || !hasApiKey) {
+        "এই বিল্ডে google-services.json যুক্ত নেই অথবা Firebase কনফিগারেশন অসম্পূর্ণ। সঠিক google-services.json দিয়ে অ্যাপটি পুনরায় বিল্ড করুন।"
+    } else {
+        "অনলাইন AI সেবা এই বিল্ডে প্রস্তুত নয়। অনুগ্রহ করে পরে আবার চেষ্টা করুন।"
+    }
+}
+
 fun configureAppCheck(context: Context, intent: Intent?) {
     try {
         if (!isFirebaseReady(context)) {
