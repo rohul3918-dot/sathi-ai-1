@@ -96,66 +96,81 @@ enum class VoiceLocaleOption(val tag: String, val bnLabel: String) {
     }
 }
 
-enum class AiLanguageModel(
+enum class VoicePersona(
     val key: String,
-    val apiModelName: String,
-    val displayName: String,
+    val displayNameBn: String,
     val shortLabel: String,
     val badge: String,
     val descriptionBn: String,
-    val temperature: Float,
-    val creativeMode: Boolean = false
+    val voiceGender: String,
+    val pitch: Float,
+    val speechRate: Float,
+    val voiceVariantIndex: Int,
+    val suggestedStyle: ConversationStyle,
+    val personaToneHint: String
 ) {
-    GEMINI_2_5_FLASH(
-        key = "GEMINI_2_5_FLASH",
-        apiModelName = "gemini-3.8-flash",
-        displayName = "Gemini 3.8 Flash",
-        shortLabel = "3.8 Flash",
-        badge = "Fast & Smart",
-        descriptionBn = "দ্রুত গতি ও বুদ্ধিমান উত্তরের সেরা সমন্বয় (দৈনন্দিন ব্যবহারের জন্য)",
-        temperature = 0.7f
+    FEMALE_WARM(
+        key = "FEMALE_WARM",
+        displayNameBn = "নারী কণ্ঠ ১ • স্নিগ্ধ",
+        shortLabel = "নারী কণ্ঠ ১",
+        badge = "Female Voice 1",
+        descriptionBn = "মৃদু, আন্তরিক ও বন্ধুত্বপূর্ণ নারী কণ্ঠ (দৈনন্দিন আড্ডা ও সহায়তার জন্য)",
+        voiceGender = "FEMALE",
+        pitch = 1.10f,
+        speechRate = 0.98f,
+        voiceVariantIndex = 0,
+        suggestedStyle = ConversationStyle.FRIENDLY,
+        personaToneHint = "Warm, caring, and reassuring companion tone."
     ),
-    GEMINI_2_5_PRO(
-        key = "GEMINI_2_5_PRO",
-        apiModelName = "gemini-3.8-flash",
-        displayName = "Gemini 3.8 Flash Pro",
-        shortLabel = "3.8 Pro",
-        badge = "Smart",
-        descriptionBn = "গভীর বিশ্লেষণ, জটিল সমাধান ও বিস্তারিত উত্তরের জন্য উন্নত মডেল",
-        temperature = 0.55f
+    FEMALE_CRISP(
+        key = "FEMALE_CRISP",
+        displayNameBn = "নারী কণ্ঠ ২ • চটপটে",
+        shortLabel = "নারী কণ্ঠ ২",
+        badge = "Female Voice 2",
+        descriptionBn = "স্পষ্ট, উজ্জ্বল ও চটপটে নারী কণ্ঠ (দ্রুত তথ্য ও রিমাইন্ডারের জন্য)",
+        voiceGender = "FEMALE",
+        pitch = 1.24f,
+        speechRate = 1.07f,
+        voiceVariantIndex = 1,
+        suggestedStyle = ConversationStyle.CONCISE,
+        personaToneHint = "Bright, crisp, and energetic helper tone."
     ),
-    GEMINI_2_0_FLASH_LITE(
-        key = "GEMINI_2_0_FLASH_LITE",
-        apiModelName = "gemini-3.8-flash",
-        displayName = "Gemini 3.8 Flash Lite",
-        shortLabel = "3.8 Lite",
-        badge = "Fast",
-        descriptionBn = "অত্যন্ত দ্রুত প্রতিক্রিয়া ও হালকা চ্যাটের জন্য",
-        temperature = 0.65f
+    MALE_CALM(
+        key = "MALE_CALM",
+        displayNameBn = "পুরুষ কণ্ঠ ১ • গম্ভীর",
+        shortLabel = "পুরুষ কণ্ঠ ১",
+        badge = "Male Voice 1",
+        descriptionBn = "শান্ত, গভীর ও মার্জিত পুরুষ কণ্ঠ (গুরুত্বপূর্ণ কাজ ও পরামর্শের জন্য)",
+        voiceGender = "MALE",
+        pitch = 0.76f,
+        speechRate = 0.93f,
+        voiceVariantIndex = 0,
+        suggestedStyle = ConversationStyle.POLITE,
+        personaToneHint = "Calm, steady, respectful, and thoughtful tone."
     ),
-    GEMINI_2_0_FLASH(
-        key = "GEMINI_2_0_FLASH",
-        apiModelName = "gemini-3.8-flash",
-        displayName = "Gemini 3.8 Flash",
-        shortLabel = "3.8 Flash",
-        badge = "Balanced",
-        descriptionBn = "সুষম ও নির্ভরযোগ্য সাধারণ কথোপকথন ও কাজের জন্য",
-        temperature = 0.7f
-    ),
-    CREATIVE_CHAT(
-        key = "CREATIVE_CHAT",
-        apiModelName = "gemini-3.8-flash",
-        displayName = "Creative Chat Model",
-        shortLabel = "Creative",
-        badge = "Creative",
-        descriptionBn = "গল্প, কবিতা, আইডিয়া ও প্রাণবন্ত সৃজনশীল আড্ডার জন্য",
-        temperature = 1.0f,
-        creativeMode = true
+    MALE_ENERGETIC(
+        key = "MALE_ENERGETIC",
+        displayNameBn = "পুরুষ কণ্ঠ ২ • প্রাণবন্ত",
+        shortLabel = "পুরুষ কণ্ঠ ২",
+        badge = "Male Voice 2",
+        descriptionBn = "সহজ, স্বতঃস্ফূর্ত ও প্রাণবন্ত পুরুষ কণ্ঠ (সক্রিয় আড্ডা ও রুটিনের জন্য)",
+        voiceGender = "MALE",
+        pitch = 0.92f,
+        speechRate = 1.05f,
+        voiceVariantIndex = 1,
+        suggestedStyle = ConversationStyle.CASUAL,
+        personaToneHint = "Lively, natural, upbeat, and friendly buddy tone."
     );
 
     companion object {
-        fun fromKey(key: String): AiLanguageModel =
-            entries.firstOrNull { it.key.equals(key, ignoreCase = true) } ?: GEMINI_2_5_FLASH
+        fun fromKey(key: String, fallbackGender: String = "FEMALE"): VoicePersona {
+            val direct = entries.firstOrNull { it.key.equals(key, ignoreCase = true) }
+            if (direct != null) return direct
+            return if (fallbackGender.equals("MALE", ignoreCase = true)) MALE_CALM else FEMALE_WARM
+        }
+
+        fun defaultForGender(gender: String): VoicePersona =
+            if (gender.equals("MALE", ignoreCase = true)) MALE_CALM else FEMALE_WARM
     }
 }
 
@@ -178,7 +193,7 @@ data class DevicePermissions(
     val customStylePrompt: String = "",
     val voiceGender: String = "FEMALE",
     val voiceLocale: String = "bn-BD",
-    val selectedModel: String = "GEMINI_2_5_FLASH",
+    val voicePersona: String = "FEMALE_WARM",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
@@ -220,3 +235,23 @@ data class ChatMessageRecord(
     val clientOrder: Long = 0L,
     @ServerTimestamp val createdAt: Timestamp? = null
 )
+
+@IgnoreExtraProperties
+data class UserProfile(
+    @DocumentId val id: String = "profile",
+    val userId: String = "",
+    val displayName: String = "",
+    val nickname: String = "",
+    val email: String = "",
+    val bio: String = "",
+    val googlePhotoUrl: String = "",
+    val customPhotoUri: String = "",
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+) {
+    val effectivePhotoUrl: String
+        get() = customPhotoUri.ifBlank { googlePhotoUrl }
+
+    val preferredAddressName: String
+        get() = nickname.trim().ifBlank { displayName.trim() }
+}

@@ -2,6 +2,7 @@ package com.example.data.repository
 
 import com.example.base.FirestoreEmulatorTestBase
 import com.example.data.model.DevicePermissions
+import com.example.data.model.UserProfile
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -66,7 +67,7 @@ class SathiRepositoryRuleTest : FirestoreEmulatorTestBase() {
                     customStylePrompt = "সব সময় আদর করে ও সংক্ষেপে কথা বলবে",
                     voiceGender = "MALE",
                     voiceLocale = "bn-IN",
-                    selectedModel = "GEMINI_2_5_PRO"
+                    voicePersona = "MALE_CALM"
                 )
             )
         }
@@ -80,7 +81,7 @@ class SathiRepositoryRuleTest : FirestoreEmulatorTestBase() {
         assertEquals("CUSTOM", loaded.conversationStyle)
         assertEquals("MALE", loaded.voiceGender)
         assertEquals("bn-IN", loaded.voiceLocale)
-        assertEquals("GEMINI_2_5_PRO", loaded.selectedModel)
+        assertEquals("MALE_CALM", loaded.voicePersona)
     }
 
     @Test
@@ -116,6 +117,75 @@ class SathiRepositoryRuleTest : FirestoreEmulatorTestBase() {
             val fsErr = e.unwrapFirestoreException()
             assertEquals(FirebaseFirestoreException.Code.PERMISSION_DENIED, fsErr?.code)
         }
+    }
+
+    @Test
+    fun saveAndObserveUserProfile_owner_succeeds() = runBlocking {
+        val uid = signInTestUser(ALICE_EMAIL)
+        val repository = SathiRepository(firestore)
+
+        val saveRes = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repository.saveUserProfile(
+                uid,
+                UserProfile(
+                    userId = uid,
+                    displayName = "Ruhul Amin",
+                    nickname = "রুহুল",
+                    email = ALICE_EMAIL,
+                    bio = "Building Sathi AI",
+                    googlePhotoUrl = "https://example.com/avatar.jpg",
+                    customPhotoUri = ""
+                )
+            )
+        }
+        assertTrue(saveRes.isSuccess)
+
+        val loaded = withTimeout(FLOW_TIMEOUT_MS) {
+            repository.observeUserProfile(uid).first { it.displayName == "Ruhul Amin" }
+        }
+        assertEquals("রুহুল", loaded.nickname)
+        assertEquals("Building Sathi AI", loaded.bio)
+        assertEquals("https://example.com/avatar.jpg", loaded.effectivePhotoUrl)
+
+        val updateRes = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repository.saveUserProfile(
+                uid,
+                loaded.copy(
+                    nickname = "ভাইয়া",
+                    customPhotoUri = "file:///data/user/0/com.example/files/avatars/alice.jpg"
+                )
+            )
+        }
+        assertTrue(updateRes.isSuccess)
+
+        val updated = withTimeout(FLOW_TIMEOUT_MS) {
+            repository.observeUserProfile(uid).first { it.nickname == "ভাইয়া" }
+        }
+        assertEquals("file:///data/user/0/com.example/files/avatars/alice.jpg", updated.effectivePhotoUrl)
+    }
+
+    @Test
+    fun crossUserProfileAccess_failsWithPermissionDenied() = runBlocking {
+        val aliceUid = signInTestUser(ALICE_EMAIL)
+        val aliceRepo = SathiRepository(firestore)
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            aliceRepo.saveUserProfile(
+                aliceUid,
+                UserProfile(userId = aliceUid, displayName = "Alice", nickname = "Ali")
+            )
+        }.getOrThrow()
+
+        signInTestUser(BOB_EMAIL)
+        val bobRepo = SathiRepository(firestore)
+        val writeRes = withTimeout(DEFAULT_TIMEOUT_MS) {
+            bobRepo.saveUserProfile(
+                aliceUid,
+                UserProfile(userId = aliceUid, displayName = "Mallory")
+            )
+        }
+        assertTrue(writeRes.isFailure)
+        val fsErr = writeRes.exceptionOrNull()?.unwrapFirestoreException()
+        assertEquals(FirebaseFirestoreException.Code.PERMISSION_DENIED, fsErr?.code)
     }
 
     private companion object {

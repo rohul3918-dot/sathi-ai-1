@@ -5,25 +5,24 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.rounded.AccountCircle
-import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -58,7 +57,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.ai.SathiAiEngine
-import com.example.core.OnlineAiConfigStore
 import com.example.core.attemptAutoSignIn
 import com.example.core.configureAppCheck
 import com.example.core.isFirebaseReady
@@ -66,16 +64,18 @@ import com.example.core.onGoogleSignInClicked
 import com.example.core.safeAuthStateFlow
 import com.example.core.safeCurrentUser
 import com.example.core.signOutUser
-import com.example.data.model.AiLanguageModel
+import com.example.data.model.VoicePersona
 import com.example.data.repository.LocalFallbackSathiDataStore
 import com.example.data.repository.SathiDataStore
 import com.example.data.repository.SathiRepository
 import com.example.device.DeviceControlManager
 import com.example.device.VoiceAssistantManager
 import com.example.ui.SathiViewModel
-import com.example.ui.components.ModelSelectorSheet
+import com.example.ui.components.VoicePersonaSheet
 import com.example.ui.screens.AssistantChatScreen
 import com.example.ui.screens.PermissionsDeviceScreen
+import com.example.ui.screens.ProfileAvatarImage
+import com.example.ui.screens.ProfileScreen
 import com.example.ui.screens.TasksScreen
 import com.example.ui.theme.EmeraldSuccess
 import com.example.ui.theme.SathiAiTheme
@@ -84,13 +84,14 @@ import com.google.firebase.firestore.FirebaseFirestore
 private enum class SathiRoute {
     CHAT,
     TASKS,
-    SETTINGS
+    SETTINGS,
+    PROFILE
 }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Safely configure App Check (no-op if google-services.json is absent)
+        // Configure App Check with launch intent before any UI, ViewModels, or Firebase operations
         configureAppCheck(this, intent)
 
         enableEdgeToEdge()
@@ -137,6 +138,7 @@ fun AppNavigation() {
             isSignedIn = isSignedIn,
             userDisplayName = if (isSignedIn) (user?.displayName ?: user?.email ?: "ব্যবহারকারী") else "সাইন-ইন করুন",
             userEmail = if (isSignedIn) user?.email else null,
+            userPhotoUrl = if (isSignedIn) user?.photoUrl?.toString() else null,
             firebaseReady = firebaseReady
         )
     }
@@ -149,6 +151,7 @@ fun SathiHomeShell(
     isSignedIn: Boolean,
     userDisplayName: String,
     userEmail: String?,
+    userPhotoUrl: String?,
     firebaseReady: Boolean
 ) {
     val context = LocalContext.current
@@ -164,18 +167,16 @@ fun SathiHomeShell(
                 val app = checkNotNull(this[APPLICATION_KEY]) {
                     "APPLICATION_KEY missing from CreationExtras"
                 }
-                val configStore = OnlineAiConfigStore(app)
                 val store: SathiDataStore = if (isSignedIn && firebaseReady) {
                     val databaseId = app.getString(R.string.firestore_database_id)
                     val db = FirebaseFirestore.getInstance(databaseId)
-                    SathiRepository(db)
+                    SathiRepository(db, app)
                 } else {
                     LocalFallbackSathiDataStore(app)
                 }
                 SathiViewModel(
                     repository = store,
-                    aiEngine = SathiAiEngine(app, configStore),
-                    configStore = configStore,
+                    aiEngine = SathiAiEngine(app),
                     deviceManager = DeviceControlManager(app),
                     voiceManager = VoiceAssistantManager(app),
                     currentUserId = currentUserId
@@ -185,22 +186,25 @@ fun SathiHomeShell(
     )
 
     var currentRoute by rememberSaveable { mutableStateOf(SathiRoute.CHAT) }
-    var showModelSheet by remember { mutableStateOf(false) }
+    var showPersonaSheet by remember { mutableStateOf(false) }
     var isSigningIn by remember { mutableStateOf(false) }
     var authErrorMessage by remember { mutableStateOf<String?>(null) }
 
     val permissions by viewModel.permissionsState.collectAsStateWithLifecycle()
+    val userProfile by viewModel.userProfileState.collectAsStateWithLifecycle()
     val statusBanner by viewModel.statusBanner.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
     val aiName = permissions.assistantName.ifBlank { "সাথী" }
-    val activeModel = AiLanguageModel.fromKey(permissions.selectedModel)
+    val activePersona = VoicePersona.fromKey(permissions.voicePersona, permissions.voiceGender)
+    val effectiveProfileName = userProfile.displayName.ifBlank { userDisplayName }
+    val effectiveProfilePhoto = userProfile.effectivePhotoUrl.ifBlank { userPhotoUrl.orEmpty() }
 
     val triggerGoogleSignIn: () -> Unit = {
         val cm = credentialManager
         if (!firebaseReady) {
-            authErrorMessage = "এই বিল্ডে google-services.json নেই। Settings থেকে API Key দিয়ে অনলাইন AI চ্যাট ব্যবহার করতে পারবেন।"
-            viewModel.showMessage("Google Sign-In-এর জন্য Firebase (google-services.json) প্রয়োজন।")
+            authErrorMessage = "এই বিল্ডে Firebase (google-services.json) সক্রিয় নেই।"
+            viewModel.showMessage("Google Sign-In-এর জন্য Firebase কনফিগারেশন প্রয়োজন।")
             currentRoute = SathiRoute.SETTINGS
         } else if (cm == null) {
             authErrorMessage = "এই ডিভাইসে Credential Manager পাওয়া যায়নি।"
@@ -254,13 +258,16 @@ fun SathiHomeShell(
         }
     }
 
-    if (showModelSheet) {
-        ModelSelectorSheet(
-            selectedModelKey = activeModel.key,
-            onSelectModel = { model ->
-                viewModel.selectAiModel(model.key)
+    if (showPersonaSheet) {
+        VoicePersonaSheet(
+            selectedPersonaKey = activePersona.key,
+            onSelectPersona = { persona ->
+                viewModel.selectVoicePersona(persona.key)
             },
-            onDismiss = { showModelSheet = false }
+            onPreviewVoice = { persona ->
+                viewModel.testAssistantVoice(persona.key, permissions.voiceLocale)
+            },
+            onDismiss = { showPersonaSheet = false }
         )
     }
 
@@ -286,8 +293,8 @@ fun SathiHomeShell(
                                 Surface(
                                     shape = RoundedCornerShape(14.dp),
                                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
-                                    onClick = { showModelSheet = true },
-                                    modifier = Modifier.testTag("active_model_chip")
+                                    onClick = { showPersonaSheet = true },
+                                    modifier = Modifier.testTag("active_voice_persona_chip")
                                 ) {
                                     Row(
                                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
@@ -295,20 +302,20 @@ fun SathiHomeShell(
                                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                                     ) {
                                         Icon(
-                                            imageVector = Icons.Rounded.AutoAwesome,
+                                            imageVector = Icons.Rounded.RecordVoiceOver,
                                             contentDescription = null,
                                             tint = MaterialTheme.colorScheme.primary,
                                             modifier = Modifier.size(14.dp)
                                         )
                                         Text(
-                                            text = activeModel.shortLabel,
+                                            text = activePersona.shortLabel,
                                             style = MaterialTheme.typography.labelMedium,
                                             fontWeight = FontWeight.SemiBold,
                                             maxLines = 1
                                         )
                                         Icon(
                                             imageVector = Icons.Rounded.KeyboardArrowDown,
-                                            contentDescription = "মডেল পরিবর্তন",
+                                            contentDescription = "ভয়েস পরিবর্তন",
                                             modifier = Modifier.size(16.dp)
                                         )
                                     }
@@ -327,20 +334,27 @@ fun SathiHomeShell(
                             }
                             if (isSignedIn) {
                                 IconButton(
-                                    onClick = { currentRoute = SathiRoute.SETTINGS },
+                                    onClick = { currentRoute = SathiRoute.PROFILE },
                                     modifier = Modifier.testTag("header_auth_button")
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.AccountCircle,
-                                        contentDescription = "অ্যাকাউন্ট: $userDisplayName",
-                                        tint = EmeraldSuccess
-                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .size(30.dp)
+                                            .border(1.5.dp, EmeraldSuccess, CircleShape)
+                                            .padding(1.5.dp)
+                                    ) {
+                                        ProfileAvatarImage(
+                                            photoUrl = effectiveProfilePhoto,
+                                            displayName = effectiveProfileName,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
                                 }
                             } else {
                                 Surface(
                                     shape = RoundedCornerShape(12.dp),
                                     color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f),
-                                    onClick = triggerGoogleSignIn,
+                                    onClick = { currentRoute = SathiRoute.PROFILE },
                                     modifier = Modifier
                                         .padding(end = 2.dp)
                                         .testTag("header_auth_button")
@@ -424,6 +438,35 @@ fun SathiHomeShell(
                         )
                     )
                 }
+                SathiRoute.PROFILE -> {
+                    TopAppBar(
+                        navigationIcon = {
+                            IconButton(onClick = { currentRoute = SathiRoute.CHAT }) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                                    contentDescription = "চ্যাটে ফিরুন"
+                                )
+                            }
+                        },
+                        title = {
+                            Text("ব্যবহারকারী প্রোফাইল", style = MaterialTheme.typography.titleLarge)
+                        },
+                        actions = {
+                            IconButton(
+                                onClick = { currentRoute = SathiRoute.SETTINGS },
+                                modifier = Modifier.testTag("profile_to_settings_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Settings,
+                                    contentDescription = "সেটিংস"
+                                )
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.background
+                        )
+                    )
+                }
             }
         }
     ) { innerPadding ->
@@ -443,6 +486,20 @@ fun SathiHomeShell(
                     isSignedIn = isSignedIn,
                     userDisplayName = userDisplayName,
                     userEmail = userEmail,
+                    userPhotoUrl = userPhotoUrl,
+                    isSigningIn = isSigningIn,
+                    authErrorMessage = authErrorMessage,
+                    onOpenProfile = { currentRoute = SathiRoute.PROFILE },
+                    onGoogleSignIn = triggerGoogleSignIn,
+                    onSignOut = triggerSignOut
+                )
+                SathiRoute.PROFILE -> ProfileScreen(
+                    viewModel = viewModel,
+                    currentUserId = currentUserId,
+                    isSignedIn = isSignedIn,
+                    googleDisplayName = userDisplayName,
+                    googleEmail = userEmail,
+                    googlePhotoUrl = userPhotoUrl,
                     isSigningIn = isSigningIn,
                     authErrorMessage = authErrorMessage,
                     onGoogleSignIn = triggerGoogleSignIn,

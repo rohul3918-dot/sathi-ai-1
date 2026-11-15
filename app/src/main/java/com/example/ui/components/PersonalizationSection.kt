@@ -18,26 +18,19 @@ import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.AutoAwesome
-import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.CloudDone
-import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Face
 import androidx.compose.material.icons.rounded.Face3
-import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Psychology
-import androidx.compose.material.icons.rounded.Visibility
-import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -47,14 +40,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import com.example.core.OnlineAiConfig
 import com.example.data.model.ConversationStyle
 import com.example.data.model.DevicePermissions
-import com.example.data.model.VoiceGender
+import com.example.data.model.UserProfile
 import com.example.data.model.VoiceLocaleOption
+import com.example.data.model.VoicePersona
+import com.example.ui.screens.ProfileAvatarImage
 import com.example.ui.theme.EmeraldSuccess
 
 @Composable
@@ -63,12 +55,18 @@ fun AccountStatusCard(
     isSignedIn: Boolean,
     userDisplayName: String,
     userEmail: String?,
+    photoUrl: String?,
+    userProfile: UserProfile,
     isSigningIn: Boolean,
     authErrorMessage: String?,
+    onOpenProfile: () -> Unit,
     onGoogleSignIn: () -> Unit,
     onSignOut: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val resolvedName = userProfile.displayName.ifBlank { userDisplayName }
+    val resolvedPhoto = userProfile.effectivePhotoUrl.ifBlank { photoUrl.orEmpty() }
+
     Surface(
         shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surface,
@@ -83,25 +81,35 @@ fun AccountStatusCard(
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.AccountCircle,
-                    contentDescription = null,
-                    tint = if (isSignedIn) EmeraldSuccess else MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(28.dp)
-                )
+                if (isSignedIn) {
+                    ProfileAvatarImage(
+                        photoUrl = resolvedPhoto,
+                        displayName = resolvedName,
+                        modifier = Modifier.size(44.dp)
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Rounded.AccountCircle,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(40.dp)
+                    )
+                }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = if (isSignedIn) userDisplayName else "Google অ্যাকাউন্ট",
+                        text = if (isSignedIn) resolvedName else "Google অ্যাকাউন্ট ও প্রোফাইল",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
                         text = when {
+                            isSignedIn && userProfile.nickname.isNotBlank() ->
+                                "${userProfile.nickname} • ${userEmail ?: "ক্লাউড সিঙ্ক সক্রিয়"}"
                             isSignedIn -> userEmail ?: "ক্লাউড সিঙ্ক সক্রিয়"
-                            firebaseReady -> "কাজ ও সেটিংস ক্লাউডে সিঙ্ক করতে Google দিয়ে সাইন-ইন করুন"
-                            else -> "Google সাইন-ইনের জন্য Firebase কনফিগারেশন (google-services.json) যুক্ত করতে হবে; তবে আপনার Gemini API Key দিয়ে অনলাইন AI চ্যাট এখনই চলবে।"
+                            firebaseReady -> "কাজ, প্রোফাইল ও সেটিংস ক্লাউডে সিঙ্ক করতে Google দিয়ে সাইন-ইন করুন"
+                            else -> "লোকাল প্রোফাইল সক্রিয় রয়েছে। ক্লাউড সিঙ্কের জন্য Firebase কনফিগারেশন প্রয়োজন।"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -118,6 +126,21 @@ fun AccountStatusCard(
             }
 
             if (isSignedIn) {
+                Button(
+                    onClick = onOpenProfile,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag("settings_open_profile_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Edit,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("প্রোফাইল দেখুন ও আপডেট করুন", fontWeight = FontWeight.Bold)
+                }
                 OutlinedButton(
                     onClick = onSignOut,
                     modifier = Modifier
@@ -147,136 +170,21 @@ fun AccountStatusCard(
                         fontWeight = FontWeight.Bold
                     )
                 }
-            }
-        }
-    }
-}
-
-@Composable
-fun OnlineApiSetupCard(
-    onlineConfig: OnlineAiConfig,
-    firebaseReady: Boolean,
-    onSaveConfig: (apiKey: String, endpoint: String) -> Unit,
-    onClearApiKey: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    var apiKeyInput by remember(onlineConfig.userApiKey) { mutableStateOf(onlineConfig.userApiKey) }
-    var endpointInput by remember(onlineConfig.customEndpoint) { mutableStateOf(onlineConfig.customEndpoint) }
-    var showKey by remember { mutableStateOf(false) }
-    var showEndpoint by remember { mutableStateOf(false) }
-
-    val statusLabel = when {
-        onlineConfig.userApiKey.isNotBlank() -> "কাস্টম Gemini API Key সক্রিয়"
-        onlineConfig.buildTimeApiKey.isNotBlank() -> "বিল্ট-ইন Gemini API Key সক্রিয়"
-        firebaseReady -> "Firebase অনলাইন AI সংযুক্ত"
-        else -> "অনলাইন AI চালুর জন্য API Key প্রয়োজন"
-    }
-    val statusColor = if (onlineConfig.hasApiKey || firebaseReady) EmeraldSuccess else MaterialTheme.colorScheme.error
-
-    Surface(
-        shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 2.dp,
-        modifier = modifier
-            .fillMaxWidth()
-            .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f), RoundedCornerShape(20.dp))
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    imageVector = if (onlineConfig.hasApiKey || firebaseReady) Icons.Rounded.CloudDone else Icons.Rounded.Key,
-                    contentDescription = null,
-                    tint = statusColor
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "অনলাইন AI ও Gemini API Key",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Text(
-                        text = statusLabel,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = statusColor,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-            }
-
-            OutlinedTextField(
-                value = apiKeyInput,
-                onValueChange = { apiKeyInput = it },
-                label = { Text("Gemini API Key") },
-                placeholder = { Text("AIza...") },
-                singleLine = true,
-                visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
-                trailingIcon = {
-                    IconButton(onClick = { showKey = !showKey }) {
-                        Icon(
-                            imageVector = if (showKey) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                            contentDescription = if (showKey) "লুকান" else "দেখুন"
-                        )
-                    }
-                },
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("gemini_api_key_input")
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextButton(onClick = { showEndpoint = !showEndpoint }) {
-                    Text(if (showEndpoint) "এন্ডপয়েন্ট লুকান" else "কাস্টম এন্ডপয়েন্ট (ঐচ্ছিক)")
-                }
-                if (onlineConfig.userApiKey.isNotBlank()) {
-                    TextButton(onClick = {
-                        apiKeyInput = ""
-                        onClearApiKey()
-                    }) {
-                        Icon(
-                            imageVector = Icons.Rounded.DeleteOutline,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text("মুছুন")
-                    }
-                }
-            }
-
-            if (showEndpoint) {
-                OutlinedTextField(
-                    value = endpointInput,
-                    onValueChange = { endpointInput = it },
-                    label = { Text("API Base Endpoint") },
-                    placeholder = { Text(OnlineAiConfig.DEFAULT_GEMINI_ENDPOINT) },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
+                OutlinedButton(
+                    onClick = onOpenProfile,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .testTag("gemini_endpoint_input")
-                )
-            }
-
-            Button(
-                onClick = { onSaveConfig(apiKeyInput, endpointInput) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 48.dp)
-                    .testTag("save_api_key_button")
-            ) {
-                Icon(Icons.Rounded.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("API কনফিগারেশন সংরক্ষণ করুন", fontWeight = FontWeight.Bold)
+                        .heightIn(min = 48.dp)
+                        .testTag("settings_open_profile_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.AccountCircle,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("প্রোফাইল সেকশন খুলুন")
+                }
             }
         }
     }
@@ -290,14 +198,16 @@ fun AssistantPersonalizationCard(
         name: String,
         style: String,
         customPrompt: String,
-        voiceGender: String,
+        voicePersonaKey: String,
         voiceLocale: String
     ) -> Unit,
-    onTestVoice: (voiceGender: String, voiceLocale: String) -> Unit,
+    onTestVoice: (voicePersonaKey: String, voiceLocale: String) -> Unit,
     onToggleTts: (Boolean) -> Unit,
     onSelectLanguage: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val currentPersona = VoicePersona.fromKey(permissions.voicePersona, permissions.voiceGender)
+
     var nameInput by remember(permissions.assistantName) {
         mutableStateOf(permissions.assistantName.ifBlank { "সাথী" })
     }
@@ -307,8 +217,8 @@ fun AssistantPersonalizationCard(
     var customStyleInput by remember(permissions.customStylePrompt) {
         mutableStateOf(permissions.customStylePrompt)
     }
-    var selectedVoice by remember(permissions.voiceGender) {
-        mutableStateOf(permissions.voiceGender.ifBlank { "FEMALE" })
+    var selectedPersonaKey by remember(currentPersona.key) {
+        mutableStateOf(currentPersona.key)
     }
     var selectedVoiceLocale by remember(permissions.voiceLocale) {
         mutableStateOf(permissions.voiceLocale.ifBlank { "bn-BD" })
@@ -317,7 +227,7 @@ fun AssistantPersonalizationCard(
     val hasUnsavedChanges = nameInput.trim().ifBlank { "সাথী" } != permissions.assistantName ||
         selectedStyle != permissions.conversationStyle ||
         customStyleInput.trim() != permissions.customStylePrompt ||
-        selectedVoice != permissions.voiceGender ||
+        selectedPersonaKey != currentPersona.key ||
         selectedVoiceLocale != permissions.voiceLocale
 
     Surface(
@@ -347,7 +257,7 @@ fun AssistantPersonalizationCard(
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(
-                        text = "নাম, কথা বলার স্টাইল এবং নারী/পুরুষ ভয়েস পছন্দ করুন",
+                        text = "নাম, কথা বলার স্টাইল এবং নারী/পুরুষ ভয়েস পারসোনা বেছে নিন",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -442,31 +352,33 @@ fun AssistantPersonalizationCard(
             }
 
             Text(
-                text = "ভয়েস নির্বাচন (নারী / পুরুষ)",
+                text = "ভয়েস পারসোনা (নারী / পুরুষ কণ্ঠ)",
                 style = MaterialTheme.typography.titleSmall
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                VoiceGender.entries.forEach { vg ->
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                VoicePersona.entries.forEach { persona ->
+                    val isSelected = selectedPersonaKey == persona.key
+                    val isFemale = persona.voiceGender == "FEMALE"
                     FilterChip(
-                        selected = selectedVoice == vg.key,
+                        selected = isSelected,
                         onClick = {
-                            selectedVoice = vg.key
-                            onSave(nameInput, selectedStyle, customStyleInput, vg.key, selectedVoiceLocale)
+                            selectedPersonaKey = persona.key
+                            if (selectedStyle != ConversationStyle.CUSTOM.key) {
+                                selectedStyle = persona.suggestedStyle.key
+                            }
+                            onSave(nameInput, selectedStyle, customStyleInput, persona.key, selectedVoiceLocale)
                         },
                         leadingIcon = {
                             Icon(
-                                imageVector = if (vg == VoiceGender.FEMALE) Icons.Rounded.Face3 else Icons.Rounded.Face,
+                                imageVector = if (isFemale) Icons.Rounded.Face3 else Icons.Rounded.Face,
                                 contentDescription = null,
                                 modifier = Modifier.size(18.dp)
                             )
                         },
-                        label = { Text(vg.bnLabel) },
+                        label = { Text("${persona.displayNameBn} (${persona.badge})") },
                         modifier = Modifier
-                            .weight(1f)
-                            .testTag("voice_${vg.key.lowercase()}_chip")
+                            .fillMaxWidth()
+                            .testTag("voice_persona_${persona.key.lowercase()}")
                     )
                 }
             }
@@ -481,7 +393,7 @@ fun AssistantPersonalizationCard(
                         selected = selectedVoiceLocale == localeOpt.tag,
                         onClick = {
                             selectedVoiceLocale = localeOpt.tag
-                            onSave(nameInput, selectedStyle, customStyleInput, selectedVoice, localeOpt.tag)
+                            onSave(nameInput, selectedStyle, customStyleInput, selectedPersonaKey, localeOpt.tag)
                         },
                         label = { Text(localeOpt.bnLabel) },
                         modifier = Modifier.testTag("voice_locale_${localeOpt.tag.lowercase()}")
@@ -495,7 +407,7 @@ fun AssistantPersonalizationCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 OutlinedButton(
-                    onClick = { onTestVoice(selectedVoice, selectedVoiceLocale) },
+                    onClick = { onTestVoice(selectedPersonaKey, selectedVoiceLocale) },
                     modifier = Modifier
                         .heightIn(min = 48.dp)
                         .testTag("test_voice_button")
@@ -513,7 +425,7 @@ fun AssistantPersonalizationCard(
 
                 Button(
                     onClick = {
-                        onSave(nameInput, selectedStyle, customStyleInput, selectedVoice, selectedVoiceLocale)
+                        onSave(nameInput, selectedStyle, customStyleInput, selectedPersonaKey, selectedVoiceLocale)
                     },
                     enabled = hasUnsavedChanges || selectedStyle == ConversationStyle.CUSTOM.key,
                     modifier = Modifier

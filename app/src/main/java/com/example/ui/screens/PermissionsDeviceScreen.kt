@@ -25,7 +25,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Alarm
-import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.Brightness6
 import androidx.compose.material.icons.rounded.Call
@@ -62,13 +61,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.core.isFirebaseReady
-import com.example.data.model.AiLanguageModel
 import com.example.data.model.DeviceActionLog
 import com.example.ui.SathiViewModel
 import com.example.ui.components.AccountStatusCard
 import com.example.ui.components.AssistantPersonalizationCard
-import com.example.ui.components.ModelOptionRow
-import com.example.ui.components.OnlineApiSetupCard
 import com.example.ui.theme.EmeraldSuccess
 
 @Composable
@@ -77,8 +73,10 @@ fun PermissionsDeviceScreen(
     isSignedIn: Boolean,
     userDisplayName: String,
     userEmail: String?,
+    userPhotoUrl: String?,
     isSigningIn: Boolean,
     authErrorMessage: String?,
+    onOpenProfile: () -> Unit,
     onGoogleSignIn: () -> Unit,
     onSignOut: () -> Unit,
     modifier: Modifier = Modifier
@@ -88,7 +86,7 @@ fun PermissionsDeviceScreen(
     val firebaseReady = remember(context) { isFirebaseReady(context) }
 
     val perms by viewModel.permissionsState.collectAsStateWithLifecycle()
-    val onlineConfig by viewModel.onlineConfigState.collectAsStateWithLifecycle()
+    val userProfile by viewModel.userProfileState.collectAsStateWithLifecycle()
     val logs by viewModel.actionLogsState.collectAsStateWithLifecycle()
     val isFlashOn by viewModel.isFlashlightOn.collectAsStateWithLifecycle()
     val volumePct by viewModel.currentVolumePercent.collectAsStateWithLifecycle()
@@ -135,88 +133,38 @@ fun PermissionsDeviceScreen(
             contentPadding = PaddingValues(top = 8.dp, bottom = 36.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // 1. Google Account & Cloud Sync
+            // 1. Google Account, Profile & Cloud Sync
             item {
                 AccountStatusCard(
                     firebaseReady = firebaseReady,
                     isSignedIn = isSignedIn,
                     userDisplayName = userDisplayName,
                     userEmail = userEmail,
+                    photoUrl = userPhotoUrl,
+                    userProfile = userProfile,
                     isSigningIn = isSigningIn,
                     authErrorMessage = authErrorMessage,
+                    onOpenProfile = onOpenProfile,
                     onGoogleSignIn = onGoogleSignIn,
                     onSignOut = onSignOut
                 )
             }
 
-            // 2. Online Gemini API Key & Endpoint Setup
-            item {
-                OnlineApiSetupCard(
-                    onlineConfig = onlineConfig,
-                    firebaseReady = firebaseReady,
-                    onSaveConfig = { key, endpoint ->
-                        viewModel.saveOnlineApiConfig(key, endpoint)
-                    },
-                    onClearApiKey = {
-                        viewModel.clearOnlineApiKey()
-                    }
-                )
-            }
-
-            // 3. Language Model Selector
-            item {
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 2.dp,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.28f), RoundedCornerShape(20.dp))
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.AutoAwesome,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                text = "অনলাইন ল্যাঙ্গুয়েজ মডেল",
-                                style = MaterialTheme.typography.titleMedium
-                            )
-                        }
-                        AiLanguageModel.entries.forEach { model ->
-                            ModelOptionRow(
-                                model = model,
-                                isSelected = perms.selectedModel == model.key,
-                                onClick = { viewModel.selectAiModel(model.key) }
-                            )
-                        }
-                    }
-                }
-            }
-
-            // 4. Custom AI Name, Style, Male & Female Voice + Test Voice
+            // 2. Custom AI Name, Style, Voice Persona + Test Voice
             item {
                 AssistantPersonalizationCard(
                     permissions = perms,
-                    onSave = { name, style, customPrompt, voiceGender, voiceLocale ->
+                    onSave = { name, style, customPrompt, voicePersonaKey, voiceLocale ->
                         viewModel.updatePersonalization(
                             assistantName = name,
                             conversationStyle = style,
                             customStylePrompt = customPrompt,
-                            voiceGender = voiceGender,
+                            voicePersonaKey = voicePersonaKey,
                             voiceLocale = voiceLocale
                         )
                     },
-                    onTestVoice = { voiceGender, voiceLocale ->
-                        viewModel.testAssistantVoice(voiceGender, voiceLocale)
+                    onTestVoice = { voicePersonaKey, voiceLocale ->
+                        viewModel.testAssistantVoice(voicePersonaKey, voiceLocale)
                     },
                     onToggleTts = { enabled ->
                         viewModel.updatePermissions(perms.copy(allowTtsSpeech = enabled))
@@ -227,7 +175,7 @@ fun PermissionsDeviceScreen(
                 )
             }
 
-            // 5. Chat Management
+            // 3. Chat Management
             item {
                 Surface(
                     shape = RoundedCornerShape(18.dp),
@@ -264,7 +212,7 @@ fun PermissionsDeviceScreen(
                 }
             }
 
-            // 6. Device Control Sovereignty Header
+            // 4. Device Control Sovereignty Header
             item {
                 Text(
                     text = "ডিভাইস কন্ট্রোল ও পারমিশন",

@@ -5,25 +5,70 @@ import com.example.data.model.ChatMessageRecord
 import com.example.data.model.DailyTask
 import com.example.data.model.DeviceActionLog
 import com.example.data.model.DevicePermissions
+import com.example.data.model.UserProfile
+import com.example.data.model.VoicePersona
 import com.google.firebase.Timestamp
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.map
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
+internal class LocalProfileCache(context: Context) {
+    private val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    fun load(userId: String): UserProfile? {
+        return try {
+            val raw = prefs.getString("$KEY_PREFIX$userId", null) ?: return null
+            val o = JSONObject(raw)
+            UserProfile(
+                userId = userId,
+                displayName = o.optString("displayName", ""),
+                nickname = o.optString("nickname", ""),
+                email = o.optString("email", ""),
+                bio = o.optString("bio", ""),
+                googlePhotoUrl = o.optString("googlePhotoUrl", ""),
+                customPhotoUri = o.optString("customPhotoUri", "")
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun save(userId: String, profile: UserProfile) {
+        val o = JSONObject().apply {
+            put("userId", userId)
+            put("displayName", profile.displayName)
+            put("nickname", profile.nickname)
+            put("email", profile.email)
+            put("bio", profile.bio)
+            put("googlePhotoUrl", profile.googlePhotoUrl)
+            put("customPhotoUri", profile.customPhotoUri)
+        }
+        prefs.edit().putString("$KEY_PREFIX$userId", o.toString()).apply()
+    }
+
+    private companion object {
+        const val PREFS_NAME = "sathi_profile_cache"
+        const val KEY_PREFIX = "profile_"
+    }
+}
+
 /**
- * Local fallback store used strictly when the APK was built without Firebase google-services.json.
- * Allows the app to launch and work locally without crashing.
+ * Local fallback store used when signed out or when the APK was built without Firebase google-services.json.
+ * Allows the app to launch and persist user data locally without crashing.
  */
 class LocalFallbackSathiDataStore(context: Context) : SathiDataStore {
 
     private val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val profileCache = LocalProfileCache(context.applicationContext)
 
     private val tasksFlow = MutableStateFlow(loadTasks())
     private val permissionsFlow = MutableStateFlow(loadPermissions())
     private val logsFlow = MutableStateFlow(loadLogs())
     private val messagesFlow = MutableStateFlow(loadMessages())
+    private val profilesFlow = MutableStateFlow<Map<String, UserProfile>>(emptyMap())
 
     override fun observeTasks(userId: String): Flow<List<DailyTask>> = tasksFlow
 
@@ -84,10 +129,13 @@ class LocalFallbackSathiDataStore(context: Context) : SathiDataStore {
     override fun observePermissions(userId: String): Flow<DevicePermissions> = permissionsFlow
 
     override suspend fun savePermissions(userId: String, permissions: DevicePermissions): Result<Unit> {
+        val persona = VoicePersona.fromKey(permissions.voicePersona, permissions.voiceGender)
         val sanitized = permissions.copy(
             userId = userId,
             assistantName = permissions.assistantName.trim().ifBlank { "সাথী" }.take(40),
-            customStylePrompt = permissions.customStylePrompt.trim().take(300)
+            customStylePrompt = permissions.customStylePrompt.trim().take(300),
+            voiceGender = persona.voiceGender,
+            voicePersona = persona.key
         )
         permissionsFlow.value = sanitized
         persistPermissions(sanitized)
@@ -154,6 +202,32 @@ class LocalFallbackSathiDataStore(context: Context) : SathiDataStore {
         return Result.success(Unit)
     }
 
+    override fun observeUserProfile(userId: String): Flow<UserProfile> {
+        if (!profilesFlow.value.containsKey(userId)) {
+            val cached = profileCache.load(userId) ?: UserProfile(userId = userId)
+            profilesFlow.value = profilesFlow.value + (userId to cached)
+        }
+        return profilesFlow.map { map ->
+            map[userId] ?: profileCache.load(userId) ?: UserProfile(userId = userId)
+        }
+    }
+
+    override suspend fun saveUserProfile(userId: String, profile: UserProfile): Result<Unit> {
+        val sanitized = profile.copy(
+            userId = userId,
+            displayName = profile.displayName.trim().take(80),
+            nickname = profile.nickname.trim().take(50),
+            email = profile.email.trim().take(120),
+            bio = profile.bio.trim().take(300),
+            googlePhotoUrl = profile.googlePhotoUrl.trim().take(500),
+            customPhotoUri = profile.customPhotoUri.trim().take(500),
+            updatedAt = Timestamp.now()
+        )
+        profileCache.save(userId, sanitized)
+        profilesFlow.value = profilesFlow.value + (userId to sanitized)
+        return Result.success(Unit)
+    }
+
     private fun loadTasks(): List<DailyTask> {
         return try {
             val arr = JSONArray(prefs.getString(KEY_TASKS, "[]") ?: "[]")
@@ -213,7 +287,10 @@ class LocalFallbackSathiDataStore(context: Context) : SathiDataStore {
                 customStylePrompt = o.optString("customStylePrompt", ""),
                 voiceGender = o.optString("voiceGender", "FEMALE"),
                 voiceLocale = o.optString("voiceLocale", "bn-BD"),
-                selectedModel = o.optString("selectedModel", "GEMINI_2_5_FLASH")
+                voicePersona = VoicePersona.fromKey(
+                    o.optString("voicePersona", ""),
+                    o.optString("voiceGender", "FEMALE")
+                ).key
             )
         } catch (_: Exception) {
             DevicePermissions(userId = "local")
@@ -238,7 +315,7 @@ class LocalFallbackSathiDataStore(context: Context) : SathiDataStore {
             put("customStylePrompt", p.customStylePrompt)
             put("voiceGender", p.voiceGender)
             put("voiceLocale", p.voiceLocale)
-            put("selectedModel", p.selectedModel)
+            put("voicePersona", p.voicePersona)
         }
         prefs.edit().putString(KEY_PERMISSIONS, o.toString()).apply()
     }

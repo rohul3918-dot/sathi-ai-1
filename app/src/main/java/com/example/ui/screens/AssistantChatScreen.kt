@@ -38,7 +38,6 @@ import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ContentCopy
-import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Refresh
@@ -81,10 +80,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
-import com.example.core.isFirebaseReady
-import com.example.data.model.AiLanguageModel
 import com.example.data.model.ChatMessageRecord
 import com.example.data.model.ConversationStyle
+import com.example.data.model.VoicePersona
 import com.example.device.VoiceListeningState
 import com.example.ui.ChatTurnError
 import com.example.ui.PendingPermissionPrompt
@@ -103,8 +101,8 @@ fun AssistantChatScreen(
 
     val messages by viewModel.messagesState.collectAsStateWithLifecycle()
     val permissions by viewModel.permissionsState.collectAsStateWithLifecycle()
-    val onlineConfig by viewModel.onlineConfigState.collectAsStateWithLifecycle()
     val isThinking by viewModel.isAiThinking.collectAsStateWithLifecycle()
+    val streamingReply by viewModel.streamingReplyText.collectAsStateWithLifecycle()
     val listeningState by viewModel.listeningState.collectAsStateWithLifecycle()
     val turnError by viewModel.chatTurnError.collectAsStateWithLifecycle()
     val pendingPrompt by viewModel.pendingPermissionPrompt.collectAsStateWithLifecycle()
@@ -113,10 +111,8 @@ fun AssistantChatScreen(
     val listState = rememberLazyListState()
 
     val aiName = permissions.assistantName.ifBlank { "সাথী" }
-    val activeModel = AiLanguageModel.fromKey(permissions.selectedModel)
+    val activePersona = VoicePersona.fromKey(permissions.voicePersona, permissions.voiceGender)
     val styleLabel = ConversationStyle.fromKey(permissions.conversationStyle).bnLabel
-    val firebaseReady = remember(context) { isFirebaseReady(context) }
-    val onlineReady = onlineConfig.hasApiKey || firebaseReady
 
     val micPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -132,8 +128,8 @@ fun AssistantChatScreen(
         viewModel.dismissPermissionPrompt()
     }
 
-    LaunchedEffect(messages.size, isThinking, turnError) {
-        val totalItems = messages.size + (if (isThinking) 1 else 0) + (if (turnError != null) 1 else 0)
+    LaunchedEffect(messages.size, isThinking, streamingReply, turnError) {
+        val totalItems = messages.size + (if (isThinking || !streamingReply.isNullOrBlank()) 1 else 0) + (if (turnError != null) 1 else 0)
         if (totalItems > 0 && messages.isNotEmpty()) {
             listState.animateScrollToItem((totalItems - 1).coerceAtLeast(0))
         }
@@ -145,40 +141,6 @@ fun AssistantChatScreen(
             .imePadding(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Slim API Key prompt only when neither Firebase nor Gemini API Key is set yet
-        AnimatedVisibility(visible = !onlineReady) {
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.78f),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 760.dp)
-                    .padding(horizontal = 16.dp, vertical = 6.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Key,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Text(
-                        text = "অনলাইন চ্যাটের জন্য Settings-এ Gemini API Key যোগ করুন",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        modifier = Modifier.weight(1f)
-                    )
-                    TextButton(onClick = onNavigateToSettings) {
-                        Text("API Key দিন", fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-        }
-
         // Voice active listening / error indicator
         AnimatedVisibility(visible = listeningState !is VoiceListeningState.Idle) {
             val (bannerText, isErr) = when (val st = listeningState) {
@@ -258,11 +220,11 @@ fun AssistantChatScreen(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            if (messages.isEmpty()) {
+            if (messages.isEmpty() && streamingReply.isNullOrBlank()) {
                 item {
-                    GeminiEmptyCanvas(
+                    AssistantEmptyCanvas(
                         assistantName = aiName,
-                        modelName = activeModel.displayName,
+                        personaLabel = activePersona.displayNameBn,
                         styleLabel = styleLabel,
                         onPickPrompt = { prompt ->
                             viewModel.sendUserMessage(prompt, activity)
@@ -295,29 +257,37 @@ fun AssistantChatScreen(
 
             if (isThinking) {
                 item {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        modifier = Modifier.padding(vertical = 8.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(30.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primaryContainer),
-                            contentAlignment = Alignment.Center
+                    val liveText = streamingReply
+                    if (!liveText.isNullOrBlank()) {
+                        StreamingAssistantBubble(
+                            assistantName = aiName,
+                            text = liveText
+                        )
+                    } else {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.padding(vertical = 8.dp)
                         ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.primary
+                            Box(
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.primaryContainer),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            Text(
+                                text = "$aiName ভাবছে...",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        Text(
-                            text = "$aiName (${activeModel.shortLabel}) উত্তর লিখছে...",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
                     }
                 }
             }
@@ -327,7 +297,6 @@ fun AssistantChatScreen(
                     TurnErrorBannerCard(
                         error = errorState,
                         onRetry = { viewModel.retryLastFailedTurn(activity) },
-                        onOpenSettings = onNavigateToSettings,
                         onDismiss = { viewModel.dismissAiError() }
                     )
                 }
@@ -441,9 +410,9 @@ fun AssistantChatScreen(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun GeminiEmptyCanvas(
+private fun AssistantEmptyCanvas(
     assistantName: String,
-    modelName: String,
+    personaLabel: String,
     styleLabel: String,
     onPickPrompt: (String) -> Unit
 ) {
@@ -489,7 +458,7 @@ private fun GeminiEmptyCanvas(
                 textAlign = TextAlign.Center
             )
             Text(
-                text = "$modelName • $styleLabel",
+                text = "$personaLabel • $styleLabel",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.primary
             )
@@ -554,6 +523,41 @@ private fun UserChatBubble(message: ChatMessageRecord) {
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp)
             )
         }
+    }
+}
+
+@Composable
+private fun StreamingAssistantBubble(
+    assistantName: String,
+    text: String
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Start,
+        verticalAlignment = Alignment.Top
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(top = 4.dp)
+                .size(30.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.AutoAwesome,
+                contentDescription = assistantName,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.weight(1f)
+        )
     }
 }
 
@@ -646,7 +650,7 @@ private fun AssistantChatBubble(
                 }
             }
 
-            // Copy, Speak & Retry action row (like Gemini / ChatGPT)
+            // Copy, Speak & Retry action row
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(2.dp)
@@ -699,7 +703,6 @@ private fun AssistantChatBubble(
 private fun TurnErrorBannerCard(
     error: ChatTurnError,
     onRetry: () -> Unit,
-    onOpenSettings: () -> Unit,
     onDismiss: () -> Unit
 ) {
     Surface(
@@ -726,11 +729,6 @@ private fun TurnErrorBannerCard(
                     Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("আবার চেষ্টা করুন")
-                }
-                if (error.missingConfig) {
-                    Button(onClick = onOpenSettings) {
-                        Text("Settings খুলুন")
-                    }
                 }
                 TextButton(onClick = onDismiss) {
                     Text("বন্ধ")

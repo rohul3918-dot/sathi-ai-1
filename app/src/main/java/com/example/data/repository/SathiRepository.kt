@@ -8,6 +8,8 @@ import com.example.data.model.ChatMessageRecord
 import com.example.data.model.DailyTask
 import com.example.data.model.DeviceActionLog
 import com.example.data.model.DevicePermissions
+import com.example.data.model.UserProfile
+import com.example.data.model.VoicePersona
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
@@ -53,15 +55,23 @@ interface SathiDataStore {
         clientOrder: Long = System.currentTimeMillis()
     ): Result<String>
     suspend fun clearMessages(userId: String): Result<Unit>
+    fun observeUserProfile(userId: String): Flow<UserProfile>
+    suspend fun saveUserProfile(userId: String, profile: UserProfile): Result<Unit>
 }
 
-class SathiRepository(private val db: FirebaseFirestore) : SathiDataStore {
+class SathiRepository(
+    private val db: FirebaseFirestore,
+    appContext: Context? = null
+) : SathiDataStore {
 
     constructor(context: Context) : this(
-        FirebaseFirestore.getInstance(
+        db = FirebaseFirestore.getInstance(
             context.applicationContext.getString(R.string.firestore_database_id)
-        )
+        ),
+        appContext = context.applicationContext
     )
+
+    private val localProfileCache = appContext?.let { LocalProfileCache(it.applicationContext) }
 
     private fun tasksCollection(userId: String) =
         db.collection("users").document(userId).collection("tasks")
@@ -74,6 +84,9 @@ class SathiRepository(private val db: FirebaseFirestore) : SathiDataStore {
 
     private fun messagesCollection(userId: String) =
         db.collection("users").document(userId).collection("messages")
+
+    private fun profileDoc(userId: String) =
+        db.collection("users").document(userId).collection("profile").document("profile")
 
     override fun observeTasks(userId: String): Flow<List<DailyTask>> =
         tasksCollection(userId)
@@ -207,17 +220,10 @@ class SathiRepository(private val db: FirebaseFirestore) : SathiDataStore {
             it in setOf("FRIENDLY", "POLITE", "CASUAL", "CONCISE", "CUSTOM")
         } ?: "FRIENDLY"
         val cleanCustomPrompt = permissions.customStylePrompt.trim().take(300)
-        val cleanVoiceGender = permissions.voiceGender.takeIf { it in setOf("FEMALE", "MALE") } ?: "FEMALE"
+        val persona = VoicePersona.fromKey(permissions.voicePersona, permissions.voiceGender)
+        val cleanVoiceGender = persona.voiceGender
         val cleanVoiceLocale = permissions.voiceLocale.takeIf { it in setOf("bn-BD", "bn-IN", "en-US") } ?: "bn-BD"
-        val cleanModel = permissions.selectedModel.takeIf {
-            it in setOf(
-                "GEMINI_2_5_FLASH",
-                "GEMINI_2_5_PRO",
-                "GEMINI_2_0_FLASH_LITE",
-                "GEMINI_2_0_FLASH",
-                "CREATIVE_CHAT"
-            )
-        } ?: "GEMINI_2_5_FLASH"
+        val cleanPersonaKey = persona.key
         val sanitized = permissions.copy(
             userId = userId,
             assistantName = cleanName,
@@ -225,7 +231,7 @@ class SathiRepository(private val db: FirebaseFirestore) : SathiDataStore {
             customStylePrompt = cleanCustomPrompt,
             voiceGender = cleanVoiceGender,
             voiceLocale = cleanVoiceLocale,
-            selectedModel = cleanModel
+            voicePersona = cleanPersonaKey
         )
         return try {
             val docExists = sanitized.createdAt != null || docRef.get().await().exists()
@@ -247,7 +253,7 @@ class SathiRepository(private val db: FirebaseFirestore) : SathiDataStore {
                     "customStylePrompt" to sanitized.customStylePrompt,
                     "voiceGender" to sanitized.voiceGender,
                     "voiceLocale" to sanitized.voiceLocale,
-                    "selectedModel" to sanitized.selectedModel,
+                    "voicePersona" to sanitized.voicePersona,
                     "createdAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
@@ -269,7 +275,7 @@ class SathiRepository(private val db: FirebaseFirestore) : SathiDataStore {
                     "customStylePrompt" to sanitized.customStylePrompt,
                     "voiceGender" to sanitized.voiceGender,
                     "voiceLocale" to sanitized.voiceLocale,
-                    "selectedModel" to sanitized.selectedModel,
+                    "voicePersona" to sanitized.voicePersona,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
                 docRef.update(updatePayload).await()
@@ -386,6 +392,75 @@ class SathiRepository(private val db: FirebaseFirestore) : SathiDataStore {
             throw e
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.DELETE, path)
+            Result.failure(e)
+        }
+    }
+
+    override fun observeUserProfile(userId: String): Flow<UserProfile> =
+        profileDoc(userId)
+            .snapshots()
+            .map { snapshot ->
+                if (snapshot.exists()) {
+                    val remote = snapshot.toObject(
+                        UserProfile::class.java,
+                        DocumentSnapshot.ServerTimestampBehavior.ESTIMATE
+                    ) ?: UserProfile(userId = userId)
+                    localProfileCache?.save(userId, remote)
+                    remote
+                } else {
+                    localProfileCache?.load(userId) ?: UserProfile(userId = userId)
+                }
+            }
+            .catch { error ->
+                logFlowErrorIfFirestore(error, OperationType.GET, "users/$userId/profile/profile")
+                throw error
+            }
+
+    override suspend fun saveUserProfile(userId: String, profile: UserProfile): Result<Unit> {
+        val docRef = profileDoc(userId)
+        val sanitized = profile.copy(
+            userId = userId,
+            displayName = profile.displayName.trim().take(80),
+            nickname = profile.nickname.trim().take(50),
+            email = profile.email.trim().take(120),
+            bio = profile.bio.trim().take(300),
+            googlePhotoUrl = profile.googlePhotoUrl.trim().take(500),
+            customPhotoUri = profile.customPhotoUri.trim().take(500)
+        )
+        localProfileCache?.save(userId, sanitized)
+
+        return try {
+            val docExists = sanitized.createdAt != null || docRef.get().await().exists()
+            if (!docExists) {
+                val createPayload = mapOf(
+                    "userId" to userId,
+                    "displayName" to sanitized.displayName,
+                    "nickname" to sanitized.nickname,
+                    "email" to sanitized.email,
+                    "bio" to sanitized.bio,
+                    "googlePhotoUrl" to sanitized.googlePhotoUrl,
+                    "customPhotoUri" to sanitized.customPhotoUri,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                docRef.set(createPayload).await()
+            } else {
+                val updatePayload = mapOf(
+                    "displayName" to sanitized.displayName,
+                    "nickname" to sanitized.nickname,
+                    "email" to sanitized.email,
+                    "bio" to sanitized.bio,
+                    "googlePhotoUrl" to sanitized.googlePhotoUrl,
+                    "customPhotoUri" to sanitized.customPhotoUri,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                docRef.update(updatePayload).await()
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, docRef.path)
             Result.failure(e)
         }
     }

@@ -118,18 +118,18 @@ test("Authenticated user can manage permissions at settings/permissions only", a
     customStylePrompt: "Be encouraging",
     voiceGender: "FEMALE",
     voiceLocale: "bn-BD",
-    selectedModel: "GEMINI_2_5_FLASH",
+    voicePersona: "FEMALE_WARM",
   }));
   await assertSucceeds(permRef.update({
     allowFlashlight: true,
     voiceGender: "MALE",
     voiceLocale: "bn-IN",
-    selectedModel: "GEMINI_2_5_PRO",
+    voicePersona: "MALE_CALM",
     conversationStyle: "CONCISE",
     updatedAt: new Date(),
   }));
   await assertFails(permRef.update({ voiceGender: "ROBOT", updatedAt: new Date() }));
-  await assertFails(permRef.update({ selectedModel: "UNKNOWN_MODEL", updatedAt: new Date() }));
+  await assertFails(permRef.update({ voicePersona: "UNKNOWN_PERSONA", updatedAt: new Date() }));
 
   // Arbitrary doc ID rejected
   await assertFails(aliceDb.collection("users").doc(ALICE_UID).collection("settings").doc("other").set(validPermissionsPayload(ALICE_UID)));
@@ -161,4 +161,45 @@ test("Action logs are append-only (no update) and messages are owner-scoped", as
 
   const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
   await assertFails(bobDb.collection("users").doc(ALICE_UID).collection("messages").get());
+});
+
+test("Authenticated user can manage own profile/profile only with valid fields", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const profileRef = aliceDb.collection("users").doc(ALICE_UID).collection("profile").doc("profile");
+  const now = new Date();
+
+  await assertSucceeds(profileRef.set({
+    userId: ALICE_UID,
+    displayName: "Ruhul Amin",
+    nickname: "রূহুল",
+    email: "ruhul@example.com",
+    bio: "Morning runner and tech lover",
+    googlePhotoUrl: "https://example.com/photo.jpg",
+    customPhotoUri: "",
+    createdAt: now,
+    updatedAt: now,
+  }));
+
+  await assertSucceeds(profileRef.update({
+    displayName: "Ruhul A.",
+    nickname: "ভাইয়া",
+    bio: "Updated note",
+    customPhotoUri: "file:///data/user/0/com.example/files/avatars/avatar.jpg",
+    updatedAt: new Date(),
+  }));
+
+  // Rejects arbitrary doc ID, oversized bio, and cross-user reads/writes
+  await assertFails(aliceDb.collection("users").doc(ALICE_UID).collection("profile").doc("other").set({
+    userId: ALICE_UID,
+    displayName: "Invalid Doc",
+    createdAt: now,
+    updatedAt: now,
+  }));
+
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  await assertFails(bobDb.collection("users").doc(ALICE_UID).collection("profile").doc("profile").get());
+  await assertFails(bobDb.collection("users").doc(ALICE_UID).collection("profile").doc("profile").update({
+    displayName: "Hacked",
+    updatedAt: new Date(),
+  }));
 });

@@ -38,7 +38,7 @@
         "customStylePrompt": { "type": "string" },
         "voiceGender": { "type": "string", "enum": ["FEMALE", "MALE"] },
         "voiceLocale": { "type": "string", "enum": ["bn-BD", "bn-IN", "en-US"] },
-        "selectedModel": { "type": "string", "enum": ["GEMINI_2_5_FLASH", "GEMINI_2_5_PRO", "GEMINI_2_0_FLASH_LITE", "GEMINI_2_0_FLASH", "CREATIVE_CHAT"] },
+        "voicePersona": { "type": "string", "enum": ["FEMALE_WARM", "FEMALE_CRISP", "MALE_CALM", "MALE_ENERGETIC"] },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -86,6 +86,23 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["userId", "sender", "text", "actionLabel", "actionStatus", "clientOrder", "createdAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Signed-in user's editable profile details and preferred name for Sathi AI.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "nickname": { "type": "string" },
+        "email": { "type": "string" },
+        "bio": { "type": "string" },
+        "googlePhotoUrl": { "type": "string" },
+        "customPhotoUri": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "displayName", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -104,6 +121,10 @@
     "/users/{userId}/messages/{messageId}": {
       "schema": { "$ref": "#/entities/ChatMessageRecord" },
       "description": "Conversation history with AI assistant"
+    },
+    "/users/{userId}/profile/{profileId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User's editable profile, nickname, bio, and avatar reference"
     }
   }
 }

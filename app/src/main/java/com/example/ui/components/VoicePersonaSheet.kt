@@ -15,10 +15,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Face
+import androidx.compose.material.icons.rounded.Face3
+import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
@@ -29,13 +33,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.example.data.model.AiLanguageModel
+import com.example.data.model.VoicePersona
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ModelSelectorSheet(
-    selectedModelKey: String,
-    onSelectModel: (AiLanguageModel) -> Unit,
+fun VoicePersonaSheet(
+    selectedPersonaKey: String,
+    onSelectPersona: (VoicePersona) -> Unit,
+    onPreviewVoice: (VoicePersona) -> Unit,
     onDismiss: () -> Unit
 ) {
     ModalBottomSheet(
@@ -55,31 +60,32 @@ fun ModelSelectorSheet(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Icon(
-                    imageVector = Icons.Rounded.AutoAwesome,
+                    imageVector = Icons.Rounded.RecordVoiceOver,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary
                 )
                 Text(
-                    text = "অনলাইন AI মডেল নির্বাচন করুন",
+                    text = "ভয়েস পারসোনা নির্বাচন করুন",
                     style = MaterialTheme.typography.titleLarge,
                     color = MaterialTheme.colorScheme.onSurface
                 )
             }
             Text(
-                text = "আপনার চ্যাট ও কাজের ধরন অনুযায়ী মডেল বেছে নিন। প্রতিটি মেসেজে নির্বাচিত মডেল ব্যবহার হবে।",
+                text = "নারী বা পুরুষ কণ্ঠের ধরন বেছে নিন। প্রতিটি কণ্ঠের সাথে কথা বলার স্টাইল ও ভয়েস টোন সুন্দরভাবে মানিয়ে নেয়।",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            AiLanguageModel.entries.forEach { model ->
-                val isSelected = model.key == selectedModelKey
-                ModelOptionRow(
-                    model = model,
+            VoicePersona.entries.forEach { persona ->
+                val isSelected = persona.key == selectedPersonaKey
+                VoicePersonaOptionRow(
+                    persona = persona,
                     isSelected = isSelected,
                     onClick = {
-                        onSelectModel(model)
+                        onSelectPersona(persona)
                         onDismiss()
-                    }
+                    },
+                    onPreviewVoice = { onPreviewVoice(persona) }
                 )
             }
             Spacer(Modifier.height(16.dp))
@@ -88,12 +94,14 @@ fun ModelSelectorSheet(
 }
 
 @Composable
-fun ModelOptionRow(
-    model: AiLanguageModel,
+fun VoicePersonaOptionRow(
+    persona: VoicePersona,
     isSelected: Boolean,
     onClick: () -> Unit,
+    onPreviewVoice: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val isFemale = persona.voiceGender == "FEMALE"
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = if (isSelected) {
@@ -109,13 +117,19 @@ fun ModelOptionRow(
                 shape = RoundedCornerShape(16.dp)
             )
             .clickable(onClick = onClick)
-            .testTag("model_option_${model.key.lowercase()}")
+            .testTag("persona_option_${persona.key.lowercase()}")
     ) {
         Row(
             modifier = Modifier.padding(14.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            Icon(
+                imageVector = if (isFemale) Icons.Rounded.Face3 else Icons.Rounded.Face,
+                contentDescription = null,
+                tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(26.dp)
+            )
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -125,7 +139,7 @@ fun ModelOptionRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        text = model.displayName,
+                        text = persona.displayNameBn,
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
@@ -136,7 +150,7 @@ fun ModelOptionRow(
                         else MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f)
                     ) {
                         Text(
-                            text = model.badge,
+                            text = persona.badge,
                             style = MaterialTheme.typography.labelSmall,
                             color = if (isSelected) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.onSecondaryContainer,
@@ -145,9 +159,20 @@ fun ModelOptionRow(
                     }
                 }
                 Text(
-                    text = model.descriptionBn,
+                    text = persona.descriptionBn,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            IconButton(
+                onClick = onPreviewVoice,
+                modifier = Modifier.size(40.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Rounded.VolumeUp,
+                    contentDescription = "ভয়েস শুনুন",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
                 )
             }
             if (isSelected) {

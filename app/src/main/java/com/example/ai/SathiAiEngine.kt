@@ -2,32 +2,25 @@ package com.example.ai
 
 import android.content.Context
 import android.util.Log
-import com.example.core.OnlineAiConfigStore
 import com.example.core.isFirebaseReady
-import com.example.data.model.AiLanguageModel
 import com.example.data.model.ChatMessageRecord
 import com.example.data.model.ConversationStyle
 import com.example.data.model.DailyTask
 import com.example.data.model.DevicePermissions
+import com.example.data.model.UserProfile
+import com.example.data.model.VoicePersona
 import com.google.firebase.Firebase
 import com.google.firebase.ai.GenerativeModel
 import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.Schema
 import com.google.firebase.ai.type.content
 import com.google.firebase.ai.type.generationConfig
+import com.google.firebase.appcheck.FirebaseAppCheck
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeout
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
 import org.json.JSONObject
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 
 data class AiAssistantDirective(
     val reply: String,
@@ -43,21 +36,7 @@ data class AiAssistantDirective(
     val paramText: String = ""
 )
 
-class MissingOnlineAiConfigException(message: String) : IllegalStateException(message)
-
-class SathiAiEngine(
-    private val context: Context,
-    private val configStore: OnlineAiConfigStore
-) {
-
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(25, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(25, TimeUnit.SECONDS)
-        .build()
-
-    private val firebaseStructuredModels = ConcurrentHashMap<String, GenerativeModel>()
-    private val firebasePlannerModels = ConcurrentHashMap<String, GenerativeModel>()
+class SathiAiEngine(private val context: Context) {
 
     private val assistantSchema = Schema.obj(
         properties = mapOf(
@@ -90,56 +69,109 @@ class SathiAiEngine(
         )
     )
 
-    private val systemInstructionText = """
-        You are a personal online AI assistant on Android. Always adopt the exact Assistant Name, Conversation Style, Language Preference, Selected Model Behavior, and Voice Gender provided in the prompt's [Assistant Personality] block.
+    private val conversationalSystemInstruction = """
+        You are a warm, intelligent personal AI assistant on Android. Always adopt the exact Assistant Name, Voice Persona, Conversation Style, and Language Preference provided in the prompt's [Assistant Personality] block.
         Core duties:
-        1. Identity & Creator Signature Rule (HIGHEST PRIORITY):
-           - Always recognize and respond to the user-configured Assistant Name.
-           - STRICT CREATOR RULE: Whenever the user asks who created, made, built, or developed you (e.g., "তোমায় কে বানিয়েছেন?", "কে তৈরি করেছে?", "Who created you?", "Who made you?"), set actionType="NONE" and set `reply` STRICTLY to:
+        1. Identity & Creator Rule (HIGHEST PRIORITY):
+           - Always recognize and answer as the user-configured Assistant Name.
+           - STRICT CREATOR RULE: Whenever the user asks who created, made, built, or developed you (e.g., "তোমায় কে বানিয়েছেন?", "কে তৈরি করেছে?", "Who created you?", "Who made you?"), reply STRICTLY with:
              * If voiceGender == "FEMALE": "আমার কাস  রুহুল আমিন"
              * If voiceGender == "MALE": "রুহুল আমিন"
              Return ONLY that exact string with NO extra words, punctuation, or emojis.
         2. Expressive Emoji Chatting:
-           - For all normal replies (everything except the creator signature question), naturally and tastefully decorate your `reply` with relevant expressive emojis (✨, 😊, 📋, ✅, 💡, ⏰, 🔦, 🔊, 🌟, 🎯, 🚀).
+           - Decorate everyday replies naturally and tastefully with relevant emojis (✨, 😊, 💡, 🌟, 🎯, 🚀) unless answering the creator question.
         3. Conversation Style & Language:
-           - Strictly follow the requested conversationStyle and customStylePrompt.
-           - If creativeMode == true, be extra imaginative, expressive, and engaging while remaining helpful.
-           - Prefer natural Bengali unless user writes in English or assistantLanguage == "en".
-        4. Daily Task Management:
+           - Follow the requested conversationStyle, voice persona tone, and customStylePrompt strictly.
+           - Prefer natural Bengali unless the user writes in English or assistantLanguage == "en".
+        4. Helpful Assistant:
+           - Answer clearly, warmly, and concisely without unnecessary preamble.
+    """.trimIndent()
+
+    private val structuredSystemInstruction = """
+        You are a personal AI assistant on Android handling daily tasks and permission-gated device controls alongside natural conversation.
+        Core duties:
+        1. Identity & Creator Rule (HIGHEST PRIORITY):
+           - Always recognize the Assistant Name and Voice Persona provided in [Assistant Personality].
+           - STRICT CREATOR RULE: Whenever the user asks who created, made, built, or developed you, set actionType="NONE" and set `reply` STRICTLY to:
+             * If voiceGender == "FEMALE": "আমার কাস  রুহুল আমিন"
+             * If voiceGender == "MALE": "রুহুল আমিন"
+             Return ONLY that exact string.
+        2. Expressive Emoji Chatting:
+           - Decorate normal replies naturally with relevant emojis (✨, 😊, 📋, ✅, 💡, ⏰, 🔦, 🔊, 🌟).
+        3. Daily Task Management:
            - When user asks to add/remind/schedule a task, set actionType="CREATE_TASK" with concise taskTitle, category, priority, and taskTime.
            - When marking a task done or removing one, match the closest task ID from [Current Daily Tasks] and set COMPLETE_TASK or DELETE_TASK.
-        5. Permission-Gated Device Controls:
-           - Whenever the user asks to control a device feature (flashlight, volume, brightness, alarm, timer, Wi-Fi, Bluetooth, dialer, notification), output the corresponding DEVICE_* actionType so the app's permission gate enforces it deterministically.
+        4. Permission-Gated Device Controls:
+           - Whenever the user asks to control a device feature (flashlight, volume, brightness, alarm, timer, Wi-Fi, Bluetooth, dialer, notification), output the corresponding DEVICE_* actionType.
            - For DEVICE_ALARM: 24-hour "HH:MM" in paramText and label in taskTitle.
            - For DEVICE_TIMER: seconds in paramInt and label in taskTitle.
            - For DEVICE_VOLUME / DEVICE_BRIGHTNESS: 0..100 integer in paramInt.
            - For DEVICE_FLASHLIGHT: true (on) or false (off) in paramBool.
            - For DEVICE_DIAL: digits/phone number in paramText.
+           - If the message is purely conversational and needs no task/device action, set actionType="NONE".
     """.trimIndent()
 
-    private fun getFirebaseStructuredModel(modelSpec: AiLanguageModel): GenerativeModel {
-        return firebaseStructuredModels.getOrPut(modelSpec.key) {
-            Firebase.ai.generativeModel(
-                modelName = modelSpec.apiModelName,
-                generationConfig = generationConfig {
-                    temperature = modelSpec.temperature
-                    responseMimeType = "application/json"
-                    responseSchema = assistantSchema
-                },
-                systemInstruction = content { text(systemInstructionText) }
-            )
-        }
+    // Lazy model instances backed exclusively by supported Gemini 3.x models via Firebase AI Logic
+    private val primaryChatModel: GenerativeModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = PRIMARY_GEMINI_MODEL,
+            generationConfig = generationConfig {
+                temperature = 0.75f
+            },
+            systemInstruction = content { text(conversationalSystemInstruction) }
+        )
     }
 
-    private fun getFirebasePlannerModel(modelSpec: AiLanguageModel): GenerativeModel {
-        return firebasePlannerModels.getOrPut(modelSpec.key) {
-            Firebase.ai.generativeModel(
-                modelName = modelSpec.apiModelName,
-                generationConfig = generationConfig {
-                    temperature = modelSpec.temperature
-                }
-            )
-        }
+    private val fallbackChatModel: GenerativeModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = FALLBACK_GEMINI_MODEL,
+            generationConfig = generationConfig {
+                temperature = 0.7f
+            },
+            systemInstruction = content { text(conversationalSystemInstruction) }
+        )
+    }
+
+    private val primaryStructuredModel: GenerativeModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = PRIMARY_GEMINI_MODEL,
+            generationConfig = generationConfig {
+                temperature = 0.45f
+                responseMimeType = "application/json"
+                responseSchema = assistantSchema
+            },
+            systemInstruction = content { text(structuredSystemInstruction) }
+        )
+    }
+
+    private val fallbackStructuredModel: GenerativeModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = FALLBACK_GEMINI_MODEL,
+            generationConfig = generationConfig {
+                temperature = 0.45f
+                responseMimeType = "application/json"
+                responseSchema = assistantSchema
+            },
+            systemInstruction = content { text(structuredSystemInstruction) }
+        )
+    }
+
+    private val plannerModel: GenerativeModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = PRIMARY_GEMINI_MODEL,
+            generationConfig = generationConfig {
+                temperature = 0.6f
+            }
+        )
+    }
+
+    private val fallbackPlannerModel: GenerativeModel by lazy {
+        Firebase.ai.generativeModel(
+            modelName = FALLBACK_GEMINI_MODEL,
+            generationConfig = generationConfig {
+                temperature = 0.6f
+            }
+        )
     }
 
     fun isCreatorQuestion(text: String): Boolean {
@@ -172,76 +204,212 @@ class SathiAiEngine(
         }
     }
 
+    fun isLikelyActionOrDeviceIntent(text: String): Boolean {
+        val lower = text.trim().lowercase()
+        if (lower.isEmpty()) return false
+        return ACTION_INTENT_KEYWORDS.any { lower.contains(it) }
+    }
+
     suspend fun processUserTurn(
         userMessage: String,
         tasks: List<DailyTask>,
         permissions: DevicePermissions,
-        recentHistory: List<ChatMessageRecord>
+        recentHistory: List<ChatMessageRecord>,
+        userProfile: UserProfile? = null,
+        onPartialReply: (String) -> Unit = {}
     ): Result<AiAssistantDirective> {
+        val persona = VoicePersona.fromKey(permissions.voicePersona, permissions.voiceGender)
+
         // Deterministic enforcement of the Creator Signature Rule
         if (isCreatorQuestion(userMessage)) {
             return Result.success(
                 AiAssistantDirective(
-                    reply = creatorSignatureReply(permissions.voiceGender),
+                    reply = creatorSignatureReply(persona.voiceGender),
                     actionType = "NONE"
                 )
             )
         }
 
-        val modelSpec = AiLanguageModel.fromKey(permissions.selectedModel)
-        val prompt = buildStructuredPrompt(userMessage, tasks, permissions, recentHistory, modelSpec)
-        val onlineConfig = configStore.config.value
+        if (!isFirebaseReady(context)) {
+            return Result.failure(
+                IllegalStateException("অনলাইন AI সেবা এই বিল্ডে প্রস্তুত নয়। অনুগ্রহ করে পরে আবার চেষ্টা করুন।")
+            )
+        }
 
+        val prompt = buildContextPrompt(userMessage, tasks, permissions, recentHistory, persona, userProfile)
+
+        return if (isLikelyActionOrDeviceIntent(userMessage)) {
+            executeStructuredWithRetry(prompt, onPartialReply)
+        } else {
+            executeStreamingChatWithRetry(prompt, onPartialReply)
+        }
+    }
+
+    private suspend fun executeStreamingChatWithRetry(
+        prompt: String,
+        onPartialReply: (String) -> Unit
+    ): Result<AiAssistantDirective> {
+        // Attempt 1: Fast streaming with primary Gemini 3.8 Flash
+        val primaryAttempt = runStreamingAttempt(
+            model = primaryChatModel,
+            prompt = prompt,
+            timeoutMs = PRIMARY_STREAM_TIMEOUT_MS,
+            onPartialReply = onPartialReply
+        )
+        if (primaryAttempt.isSuccess) {
+            return primaryAttempt
+        }
+
+        val firstError = primaryAttempt.exceptionOrNull()
+        if (firstError is CancellationException && firstError !is TimeoutCancellationException) {
+            throw firstError
+        }
+
+        // Refresh App Check token if needed before automatic retry
+        if (firstError != null && isTokenOrAuthFailure(firstError)) {
+            refreshAppCheckTokenQuietly()
+        }
+
+        Log.w(TAG, "Primary stream retry via fallback model: ${firstError?.message}")
+
+        // Attempt 2: Automatic fast retry with Gemini 3.5 Flash-Lite
+        val fallbackAttempt = runStreamingAttempt(
+            model = fallbackChatModel,
+            prompt = prompt,
+            timeoutMs = FALLBACK_TIMEOUT_MS,
+            onPartialReply = onPartialReply
+        )
+        if (fallbackAttempt.isSuccess) {
+            return fallbackAttempt
+        }
+
+        val finalError = fallbackAttempt.exceptionOrNull()
+        if (finalError is CancellationException && finalError !is TimeoutCancellationException) {
+            throw finalError
+        }
+
+        return Result.failure(
+            IllegalStateException(
+                formatReadableOnlineError(finalError ?: firstError),
+                finalError ?: firstError
+            )
+        )
+    }
+
+    private suspend fun runStreamingAttempt(
+        model: GenerativeModel,
+        prompt: String,
+        timeoutMs: Long,
+        onPartialReply: (String) -> Unit
+    ): Result<AiAssistantDirective> {
+        val accumulated = StringBuilder()
         return try {
-            if (onlineConfig.hasApiKey) {
-                val raw = withTimeout(60_000L) {
-                    callGeminiRestApi(
-                        endpointBase = onlineConfig.normalizedEndpoint,
-                        apiKey = onlineConfig.activeApiKey,
-                        modelName = modelSpec.apiModelName,
-                        systemPrompt = systemInstructionText,
-                        userPrompt = prompt,
-                        temperature = modelSpec.temperature,
-                        structuredJson = true
-                    )
+            withTimeout(timeoutMs) {
+                model.generateContentStream(prompt).collect { chunk ->
+                    val piece = chunk.text.orEmpty()
+                    if (piece.isNotEmpty()) {
+                        accumulated.append(piece)
+                        onPartialReply(accumulated.toString())
+                    }
                 }
-                Result.success(parseDirectiveResponse(raw))
-            } else if (isFirebaseReady(context)) {
-                val response = withTimeout(60_000L) {
-                    getFirebaseStructuredModel(modelSpec).generateContent(prompt)
-                }
-                val raw = response.text ?: throw IllegalStateException("AI থেকে কোনো উত্তর আসেনি।")
-                Result.success(parseDirectiveResponse(raw))
+            }
+            val finalReply = accumulated.toString().trim()
+            if (finalReply.isEmpty()) {
+                Result.failure(IllegalStateException("AI থেকে খালি উত্তর এসেছে।"))
             } else {
-                Result.failure(
-                    MissingOnlineAiConfigException(
-                        "অনলাইন AI চ্যাট চালু করতে Settings > অনলাইন AI ও API Key অংশে আপনার Gemini API Key সেট করুন 🔑"
-                    )
-                )
+                Result.success(AiAssistantDirective(reply = finalReply, actionType = "NONE"))
             }
         } catch (e: TimeoutCancellationException) {
-            Log.e(TAG, "AI turn timed out", e)
-            Result.failure(IllegalStateException("অনলাইন AI উত্তর দিতে সময় বেশি নিচ্ছে (৬০ সেকেন্ড)। আবার চেষ্টা করুন ⏳", e))
+            val partialSoFar = accumulated.toString().trim()
+            if (partialSoFar.isNotEmpty()) {
+                Result.success(AiAssistantDirective(reply = partialSoFar, actionType = "NONE"))
+            } else {
+                Result.failure(e)
+            }
         } catch (e: CancellationException) {
             throw e
-        } catch (e: MissingOnlineAiConfigException) {
-            Result.failure(e)
         } catch (e: Exception) {
-            Log.e(TAG, "Online AI turn failed", e)
-            Result.failure(IllegalStateException(formatReadableOnlineError(e), e))
+            Log.e(TAG, "Streaming attempt failed", e)
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun executeStructuredWithRetry(
+        prompt: String,
+        onPartialReply: (String) -> Unit
+    ): Result<AiAssistantDirective> {
+        // Attempt 1: Primary Gemini 3.8 Flash structured action
+        val firstRes = try {
+            val response = withTimeout(PRIMARY_STRUCTURED_TIMEOUT_MS) {
+                primaryStructuredModel.generateContent(prompt)
+            }
+            val raw = response.text ?: throw IllegalStateException("Empty structured response")
+            Result.success(parseStructuredJson(raw))
+        } catch (e: TimeoutCancellationException) {
+            Result.failure(e)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Primary structured turn failed: ${e.message}")
+            Result.failure(e)
+        }
+
+        if (firstRes.isSuccess) return firstRes
+
+        val firstError = firstRes.exceptionOrNull()
+        if (firstError != null && isTokenOrAuthFailure(firstError)) {
+            refreshAppCheckTokenQuietly()
+        }
+
+        // Attempt 2: Retry structured turn with Gemini 3.5 Flash-Lite
+        val secondRes = try {
+            val response = withTimeout(FALLBACK_TIMEOUT_MS) {
+                fallbackStructuredModel.generateContent(prompt)
+            }
+            val raw = response.text ?: throw IllegalStateException("Empty fallback structured response")
+            Result.success(parseStructuredJson(raw))
+        } catch (e: TimeoutCancellationException) {
+            Result.failure(e)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Fallback structured turn failed: ${e.message}")
+            Result.failure(e)
+        }
+
+        if (secondRes.isSuccess) return secondRes
+
+        // Attempt 3: Never block user conversation if JSON schema fails — fall back to conversational streaming
+        return runStreamingAttempt(
+            model = fallbackChatModel,
+            prompt = prompt,
+            timeoutMs = FALLBACK_TIMEOUT_MS,
+            onPartialReply = onPartialReply
+        ).recoverCatching { streamErr ->
+            throw IllegalStateException(
+                formatReadableOnlineError(streamErr),
+                streamErr
+            )
         }
     }
 
     suspend fun generateSmartDayPlan(
         tasks: List<DailyTask>,
-        permissions: DevicePermissions
+        permissions: DevicePermissions,
+        userProfile: UserProfile? = null
     ): Result<String> {
         val pending = tasks.filter { !it.completed }
         if (pending.isEmpty()) {
             return Result.success("আপনার সব কাজ সম্পন্ন হয়েছে! আজকের দিনটি উপভোগ করুন 🎉✨")
         }
 
-        val modelSpec = AiLanguageModel.fromKey(permissions.selectedModel)
+        if (!isFirebaseReady(context)) {
+            return Result.failure(
+                IllegalStateException("অনলাইন AI সেবা এই বিল্ডে প্রস্তুত নয়।")
+            )
+        }
+
+        val persona = VoicePersona.fromKey(permissions.voicePersona, permissions.voiceGender)
         val listSummary = pending.joinToString("\n") {
             "- ${it.title} (${it.category}, priority=${it.priority}, time=${it.scheduledTime.ifBlank { "unscheduled" }})"
         }
@@ -251,8 +419,12 @@ class SathiAiEngine(
         } else {
             "Write in warm, well-structured Bengali with clear time blocks (সকাল, দুপুর, বিকাল, রাত) and relevant emojis."
         }
+        val preferredName = userProfile?.preferredAddressName.orEmpty()
+        val userNote = if (preferredName.isNotBlank()) "Address the user warmly as '$preferredName'." else ""
         val prompt = """
-            You are ${permissions.assistantName.ifBlank { "সাথী" }}. Style: ${style.instruction} ${permissions.customStylePrompt}
+            You are ${permissions.assistantName.ifBlank { "সাথী" }} (${persona.personaToneHint}).
+            Style: ${style.instruction} ${permissions.customStylePrompt}
+            $userNote
             Organize these pending daily tasks into an actionable, calm, realistic daily routine.
             $langNote
             Keep it concise (under 180 words) with bullet points.
@@ -260,41 +432,39 @@ class SathiAiEngine(
             $listSummary
         """.trimIndent()
 
-        val onlineConfig = configStore.config.value
-
         return try {
-            val text = if (onlineConfig.hasApiKey) {
-                withTimeout(60_000L) {
-                    callGeminiRestApi(
-                        endpointBase = onlineConfig.normalizedEndpoint,
-                        apiKey = onlineConfig.activeApiKey,
-                        modelName = modelSpec.apiModelName,
-                        systemPrompt = "You are a helpful personal daily planner.",
-                        userPrompt = prompt,
-                        temperature = modelSpec.temperature,
-                        structuredJson = false
-                    )
-                }.trim()
-            } else if (isFirebaseReady(context)) {
-                val response = withTimeout(60_000L) {
-                    getFirebasePlannerModel(modelSpec).generateContent(prompt)
-                }
-                response.text?.trim().orEmpty()
-            } else {
-                return Result.failure(
-                    MissingOnlineAiConfigException(
-                        "AI রুটিন তৈরি করতে Settings থেকে Gemini API Key যুক্ত করুন 🔑"
-                    )
-                )
+            val response = withTimeout(PRIMARY_STRUCTURED_TIMEOUT_MS) {
+                plannerModel.generateContent(prompt)
             }
-            if (text.isEmpty()) {
-                Result.failure(IllegalStateException("অনলাইন AI রুটিন তৈরি করতে পারেনি।"))
-            } else {
+            val text = response.text?.trim().orEmpty()
+            if (text.isNotEmpty()) {
                 Result.success(text)
+            } else {
+                val retry = withTimeout(FALLBACK_TIMEOUT_MS) {
+                    fallbackPlannerModel.generateContent(prompt)
+                }.text?.trim().orEmpty()
+                if (retry.isEmpty()) {
+                    Result.failure(IllegalStateException("রুটিন তৈরি করা যায়নি।"))
+                } else {
+                    Result.success(retry)
+                }
             }
         } catch (e: TimeoutCancellationException) {
-            Log.e(TAG, "Day plan timed out", e)
-            Result.failure(IllegalStateException("রুটিন তৈরি করতে সময় শেষ হয়েছে। আবার চেষ্টা করুন ⏳", e))
+            Log.w(TAG, "Primary planner timed out, retrying with lite model")
+            return try {
+                val retryText = withTimeout(FALLBACK_TIMEOUT_MS) {
+                    fallbackPlannerModel.generateContent(prompt)
+                }.text?.trim().orEmpty()
+                if (retryText.isEmpty()) {
+                    Result.failure(IllegalStateException("রুটিন তৈরি করতে সময় বেশি লেগেছে। আবার চেষ্টা করুন ⏳", e))
+                } else {
+                    Result.success(retryText)
+                }
+            } catch (retryErr: CancellationException) {
+                throw retryErr
+            } catch (retryErr: Exception) {
+                Result.failure(IllegalStateException(formatReadableOnlineError(retryErr), retryErr))
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -303,17 +473,35 @@ class SathiAiEngine(
         }
     }
 
-    private fun buildStructuredPrompt(
+    private fun parseStructuredJson(rawJson: String): AiAssistantDirective {
+        val json = JSONObject(rawJson)
+        return AiAssistantDirective(
+            reply = json.optString("reply", "আমি আপনার কথা শুনেছি 😊✨"),
+            actionType = json.optString("actionType", "NONE"),
+            taskTitle = json.optString("taskTitle", ""),
+            taskNote = json.optString("taskNote", ""),
+            taskCategory = json.optString("taskCategory", "PERSONAL"),
+            taskPriority = json.optString("taskPriority", "MEDIUM"),
+            taskTime = json.optString("taskTime", ""),
+            targetTaskId = json.optString("targetTaskId", ""),
+            paramBool = json.optBoolean("paramBool", false),
+            paramInt = json.optInt("paramInt", 0),
+            paramText = json.optString("paramText", "")
+        )
+    }
+
+    private fun buildContextPrompt(
         userMessage: String,
         tasks: List<DailyTask>,
         permissions: DevicePermissions,
         recentHistory: List<ChatMessageRecord>,
-        modelSpec: AiLanguageModel
+        persona: VoicePersona,
+        userProfile: UserProfile?
     ): String {
         val taskContext = if (tasks.isEmpty()) {
             "No tasks currently saved."
         } else {
-            tasks.take(25).joinToString("\n") { t ->
+            tasks.take(20).joinToString("\n") { t ->
                 "- id=${t.id} | title=${t.title} | cat=${t.category} | prio=${t.priority} | time=${t.scheduledTime} | done=${t.completed}"
             }
         }
@@ -322,11 +510,26 @@ class SathiAiEngine(
         val personalityContext = """
             assistantName=${permissions.assistantName.ifBlank { "সাথী" }}
             assistantLanguage=${permissions.assistantLanguage}
-            voiceGender=${permissions.voiceGender}
-            selectedModel=${modelSpec.displayName} (${modelSpec.apiModelName}, creativeMode=${modelSpec.creativeMode})
+            voiceGender=${persona.voiceGender}
+            voicePersona=${persona.displayNameBn} (${persona.personaToneHint})
+            voiceLocale=${permissions.voiceLocale}
             conversationStyle=${styleEnum.key} (${styleEnum.instruction})
             customStylePrompt=${permissions.customStylePrompt}
         """.trimIndent()
+
+        val preferredUser = userProfile?.preferredAddressName.orEmpty()
+        val userBio = userProfile?.bio.orEmpty()
+        val userProfileContext = if (preferredUser.isNotBlank() || userBio.isNotBlank()) {
+            """
+            [User Profile]
+            preferredAddress=${preferredUser.ifBlank { "Not specified" }}
+            displayName=${userProfile?.displayName.orEmpty()}
+            bio=${userBio.ifBlank { "None" }}
+            Address the user naturally as their preferredAddress when appropriate.
+            """.trimIndent()
+        } else {
+            "[User Profile]\nNo custom nickname or bio set."
+        }
 
         val permContext = """
             masterEnabled=${permissions.masterEnabled}
@@ -348,6 +551,8 @@ class SathiAiEngine(
             [Assistant Personality]
             $personalityContext
 
+            $userProfileContext
+
             [User Permission Settings]
             $permContext
 
@@ -362,136 +567,54 @@ class SathiAiEngine(
         """.trimIndent()
     }
 
-    private suspend fun callGeminiRestApi(
-        endpointBase: String,
-        apiKey: String,
-        modelName: String,
-        systemPrompt: String,
-        userPrompt: String,
-        temperature: Float,
-        structuredJson: Boolean
-    ): String = withContext(Dispatchers.IO) {
-        val url = "$endpointBase/v1beta/models/$modelName:generateContent?key=$apiKey"
-        val effectiveSystem = if (structuredJson) {
-            """
-            $systemPrompt
-
-            Respond ONLY with a valid raw JSON object matching these keys:
-            {
-              "reply": "string with relevant emojis",
-              "actionType": "NONE|CREATE_TASK|COMPLETE_TASK|DELETE_TASK|DEVICE_FLASHLIGHT|DEVICE_VOLUME|DEVICE_BRIGHTNESS|DEVICE_ALARM|DEVICE_TIMER|DEVICE_WIFI_PANEL|DEVICE_BLUETOOTH_SETTINGS|DEVICE_DIAL|DEVICE_NOTIFY",
-              "taskTitle": "optional string",
-              "taskNote": "optional string",
-              "taskCategory": "WORK|PERSONAL|HEALTH|ROUTINE",
-              "taskPriority": "HIGH|MEDIUM|LOW",
-              "taskTime": "optional string",
-              "targetTaskId": "optional string",
-              "paramBool": false,
-              "paramInt": 0,
-              "paramText": "optional string"
+    private suspend fun refreshAppCheckTokenQuietly() {
+        runCatching {
+            withTimeout(3_000L) {
+                FirebaseAppCheck.getInstance().getAppCheckToken(true).await()
             }
-            """.trimIndent()
-        } else {
-            systemPrompt
-        }
-
-        val generationCfg = JSONObject().apply {
-            put("temperature", temperature.toDouble())
-            if (structuredJson) {
-                put("responseMimeType", "application/json")
-            }
-        }
-
-        val bodyJson = JSONObject().apply {
-            put(
-                "system_instruction",
-                JSONObject().put("parts", JSONArray().put(JSONObject().put("text", effectiveSystem)))
-            )
-            put(
-                "contents",
-                JSONArray().put(
-                    JSONObject().apply {
-                        put("role", "user")
-                        put("parts", JSONArray().put(JSONObject().put("text", userPrompt)))
-                    }
-                )
-            )
-            put("generationConfig", generationCfg)
-        }
-
-        val request = Request.Builder()
-            .url(url)
-            .post(bodyJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-            .build()
-
-        httpClient.newCall(request).execute().use { response ->
-            val responseBody = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                val apiErrorMsg = runCatching {
-                    JSONObject(responseBody).optJSONObject("error")?.optString("message").orEmpty()
-                }.getOrDefault("")
-                throw IllegalStateException(
-                    apiErrorMsg.ifBlank { "HTTP ${response.code}: অনলাইন AI সার্ভারে সংযোগ ব্যর্থ হয়েছে।" }
-                )
-            }
-            val root = JSONObject(responseBody)
-            val candidates = root.optJSONArray("candidates")
-            val firstCandidate = candidates?.optJSONObject(0)
-            val parts = firstCandidate?.optJSONObject("content")?.optJSONArray("parts")
-            val text = parts?.optJSONObject(0)?.optString("text").orEmpty()
-            if (text.isBlank()) {
-                throw IllegalStateException("অনলাইন AI থেকে খালি উত্তর পাওয়া গেছে।")
-            }
-            text
+        }.onFailure {
+            Log.w(TAG, "App Check token refresh skipped: ${it.message}")
         }
     }
 
-    private fun parseDirectiveResponse(rawText: String): AiAssistantDirective {
-        val cleaned = rawText.trim()
-            .removePrefix("```json")
-            .removePrefix("```")
-            .removeSuffix("```")
-            .trim()
-        return try {
-            val json = JSONObject(cleaned)
-            AiAssistantDirective(
-                reply = json.optString("reply", "আমি আপনার কথা শুনেছি 😊✨"),
-                actionType = json.optString("actionType", "NONE"),
-                taskTitle = json.optString("taskTitle", ""),
-                taskNote = json.optString("taskNote", ""),
-                taskCategory = json.optString("taskCategory", "PERSONAL"),
-                taskPriority = json.optString("taskPriority", "MEDIUM"),
-                taskTime = json.optString("taskTime", ""),
-                targetTaskId = json.optString("targetTaskId", ""),
-                paramBool = json.optBoolean("paramBool", false),
-                paramInt = json.optInt("paramInt", 0),
-                paramText = json.optString("paramText", "")
-            )
-        } catch (_: Exception) {
-            AiAssistantDirective(
-                reply = cleaned.ifBlank { "আমি আপনার কথা শুনেছি 😊✨" },
-                actionType = "NONE"
-            )
-        }
+    private fun isTokenOrAuthFailure(e: Throwable): Boolean {
+        val lower = e.localizedMessage.orEmpty().lowercase()
+        return lower.contains("403") ||
+            lower.contains("app check") ||
+            lower.contains("appcheck") ||
+            lower.contains("token") ||
+            lower.contains("attestation")
     }
 
-    private fun formatReadableOnlineError(e: Exception): String {
+    private fun formatReadableOnlineError(e: Throwable?): String {
+        if (e == null) return "অনলাইন AI এর সাথে সংযোগ করা যায়নি। আবার চেষ্টা করুন 🌐"
+        if (e is TimeoutCancellationException) {
+            return "নেটওয়ার্ক ধীর হওয়ায় উত্তর আসতে দেরি হচ্ছে। অনুগ্রহ করে Retry করুন ⏳"
+        }
         val raw = e.localizedMessage.orEmpty()
         val lower = raw.lowercase()
         return when {
-            lower.contains("unable to resolve host") || lower.contains("failed to connect") || lower.contains("network") ->
-                "ইন্টারনেট সংযোগ পাওয়া যাচ্ছে না। অনুগ্রহ করে ইন্টারনেট পরীক্ষা করে আবার চেষ্টা করুন 🌐"
-            lower.contains("api key") || lower.contains("403") || lower.contains("401") || lower.contains("permission") ->
-                "API Key অথবা অ্যাক্সেস অনুমতি সঠিক নয়। Settings থেকে আপনার Gemini API Key যাচাই করুন 🔑"
+            lower.contains("unable to resolve host") || lower.contains("failed to connect") ||
+                lower.contains("network") || lower.contains("timeout") ->
+                "ইন্টারনেট সংযোগ দুর্বল বা পাওয়া যাচ্ছে না। সংযোগ দেখে আবার চেষ্টা করুন 🌐"
+            lower.contains("403") || lower.contains("app check") || lower.contains("appcheck") ||
+                lower.contains("attestation") ->
+                "সার্ভার যাচাইকরণে (App Check) সাময়িক সমস্যা হয়েছে। দয়া করে আবার Retry চাপুন 🔄"
             lower.contains("quota") || lower.contains("429") ->
-                "এই মডেলের ব্যবহারের সীমা সাময়িকভাবে পূর্ণ হয়েছে। অন্য মডেল বেছে নিন অথবা কিছুক্ষণ পর চেষ্টা করুন ⏳"
-            lower.isNotBlank() -> raw
+                "এই মুহূর্তে চাপ বেশি আছে, কিছুক্ষণ পর আবার চেষ্টা করুন ⏳"
+            raw.isNotBlank() -> raw
             else -> "অনলাইন AI এর সাথে সংযোগ করা যায়নি। আবার চেষ্টা করুন।"
         }
     }
 
     private companion object {
         const val TAG = "SathiAiEngine"
+        const val PRIMARY_GEMINI_MODEL = "gemini-3.8-flash"
+        const val FALLBACK_GEMINI_MODEL = "gemini-3.5-flash-lite"
+        const val PRIMARY_STREAM_TIMEOUT_MS = 20_000L
+        const val PRIMARY_STRUCTURED_TIMEOUT_MS = 18_000L
+        const val FALLBACK_TIMEOUT_MS = 15_000L
+
         val ACTION_TYPES = listOf(
             "NONE",
             "CREATE_TASK",
@@ -506,6 +629,19 @@ class SathiAiEngine(
             "DEVICE_BLUETOOTH_SETTINGS",
             "DEVICE_DIAL",
             "DEVICE_NOTIFY"
+        )
+
+        val ACTION_INTENT_KEYWORDS = listOf(
+            "ফ্ল্যাশ", "টর্চ", "flash", "torch", "লাইট",
+            "ভলিউম", "সাউন্ড", "আওয়াজ", "volume", "sound", "mute",
+            "ব্রাইটনেস", "আলো", "brightness", "dim",
+            "ওয়াইফাই", "wifi", "wi-fi", "ব্লুটুথ", "bluetooth",
+            "অ্যালার্ম", "alarm", "টাইমার", "timer",
+            "ডায়াল", "কল কর", "ফোন কর", "dial", "call",
+            "নোটিফিকেশন", "notify", "notification", "রিমাইন্ড", "remind",
+            "কাজ যোগ", "কাজ যুক্ত", "কাজ লেখ", "টাস্ক", "রুটিন", "তালিকা",
+            "task", "todo", "add ", "create ", "schedule",
+            "সম্পন্ন", "শেষ করে", "complete", "done", "মুছে ফেল", "ডিলিট", "delete", "remove"
         )
     }
 }

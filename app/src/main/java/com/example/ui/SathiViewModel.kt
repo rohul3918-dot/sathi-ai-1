@@ -6,22 +6,25 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.ai.AiAssistantDirective
-import com.example.ai.MissingOnlineAiConfigException
 import com.example.ai.SathiAiEngine
-import com.example.core.OnlineAiConfig
-import com.example.core.OnlineAiConfigStore
-import com.example.data.model.AiLanguageModel
 import com.example.data.model.ChatMessageRecord
+import com.example.data.model.ConversationStyle
 import com.example.data.model.DailyTask
 import com.example.data.model.DeviceActionLog
 import com.example.data.model.DevicePermissions
+import com.example.data.model.UserProfile
+import com.example.data.model.VoicePersona
 import com.example.data.repository.SathiDataStore
 import com.example.device.DeviceActionOutcome
 import com.example.device.DeviceControlManager
 import com.example.device.VoiceAssistantManager
 import com.example.device.VoiceListeningState
+import com.google.firebase.Firebase
+import com.google.firebase.auth.auth
+import com.google.firebase.auth.userProfileChangeRequest
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -45,20 +48,16 @@ data class PendingPermissionPrompt(
 
 data class ChatTurnError(
     val message: String,
-    val failedPrompt: String,
-    val missingConfig: Boolean = false
+    val failedPrompt: String
 )
 
 class SathiViewModel(
     private val repository: SathiDataStore,
     private val aiEngine: SathiAiEngine,
-    private val configStore: OnlineAiConfigStore,
     val deviceManager: DeviceControlManager,
     val voiceManager: VoiceAssistantManager,
     private val currentUserId: String
 ) : ViewModel() {
-
-    val onlineConfigState: StateFlow<OnlineAiConfig> = configStore.config
 
     val tasksState: StateFlow<DataUiState<List<DailyTask>>> =
         repository.observeTasks(currentUserId)
@@ -105,6 +104,19 @@ class SathiViewModel(
             }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
 
+    val userProfileState: StateFlow<UserProfile> =
+        repository.observeUserProfile(currentUserId)
+            .catch { error ->
+                if (error is CancellationException) throw error
+                Log.w(TAG, "Failed to observe user profile", error)
+                emit(UserProfile(userId = currentUserId))
+            }
+            .stateIn(
+                viewModelScope,
+                SharingStarted.WhileSubscribed(5000L),
+                UserProfile(userId = currentUserId)
+            )
+
     val listeningState: StateFlow<VoiceListeningState> = voiceManager.listeningState
     val isFlashlightOn: StateFlow<Boolean> = deviceManager.isFlashlightOn
     val currentVolumePercent: StateFlow<Int> = deviceManager.currentVolumePercent
@@ -112,6 +124,9 @@ class SathiViewModel(
 
     private val _isAiThinking = MutableStateFlow(false)
     val isAiThinking: StateFlow<Boolean> = _isAiThinking.asStateFlow()
+
+    private val _streamingReplyText = MutableStateFlow<String?>(null)
+    val streamingReplyText: StateFlow<String?> = _streamingReplyText.asStateFlow()
 
     private val _chatTurnError = MutableStateFlow<ChatTurnError?>(null)
     val chatTurnError: StateFlow<ChatTurnError?> = _chatTurnError.asStateFlow()
@@ -122,13 +137,14 @@ class SathiViewModel(
     private val _isGeneratingPlan = MutableStateFlow(false)
     val isGeneratingPlan: StateFlow<Boolean> = _isGeneratingPlan.asStateFlow()
 
+    private val _isSavingProfile = MutableStateFlow(false)
+    val isSavingProfile: StateFlow<Boolean> = _isSavingProfile.asStateFlow()
+
     private val _pendingPermissionPrompt = MutableStateFlow<PendingPermissionPrompt?>(null)
     val pendingPermissionPrompt: StateFlow<PendingPermissionPrompt?> = _pendingPermissionPrompt.asStateFlow()
 
     private val _statusBanner = MutableStateFlow<String?>(null)
     val statusBanner: StateFlow<String?> = _statusBanner.asStateFlow()
-
-    fun isOnlineConfigured(): Boolean = configStore.isOnlineAiConfigured()
 
     fun showMessage(msg: String) {
         _statusBanner.value = msg
@@ -156,6 +172,7 @@ class SathiViewModel(
 
         viewModelScope.launch {
             _isAiThinking.value = true
+            _streamingReplyText.value = null
             _chatTurnError.value = null
             _pendingPermissionPrompt.value = null
             val baseOrder = System.currentTimeMillis()
@@ -172,13 +189,20 @@ class SathiViewModel(
             val currentTasks = (tasksState.value as? DataUiState.Success)?.data ?: emptyList()
             val currentPerms = permissionsState.value
             val recentHistory = messagesState.value
+            val currentProfile = userProfileState.value
 
             val aiResult = aiEngine.processUserTurn(
                 userMessage = cleanText,
                 tasks = currentTasks,
                 permissions = currentPerms,
-                recentHistory = recentHistory
+                recentHistory = recentHistory,
+                userProfile = currentProfile,
+                onPartialReply = { partial ->
+                    _streamingReplyText.value = partial
+                }
             )
+
+            _streamingReplyText.value = null
 
             aiResult.fold(
                 onSuccess = { directive ->
@@ -197,15 +221,19 @@ class SathiViewModel(
                         clientOrder = baseOrder + 1
                     )
                     if (currentPerms.allowTtsSpeech) {
-                        voiceManager.speak(finalReply, currentPerms.voiceGender, currentPerms.voiceLocale)
+                        val persona = VoicePersona.fromKey(currentPerms.voicePersona, currentPerms.voiceGender)
+                        voiceManager.speakWithPersona(
+                            text = finalReply,
+                            persona = persona,
+                            voiceLocale = currentPerms.voiceLocale
+                        )
                     }
                 },
                 onFailure = { err ->
                     val message = err.localizedMessage ?: "অনলাইন AI এর সাথে সংযোগ ব্যর্থ হয়েছে।"
                     _chatTurnError.value = ChatTurnError(
                         message = message,
-                        failedPrompt = cleanText,
-                        missingConfig = err is MissingOnlineAiConfigException
+                        failedPrompt = cleanText
                     )
                 }
             )
@@ -233,7 +261,8 @@ class SathiViewModel(
 
     fun speakMessage(text: String) {
         val perms = permissionsState.value
-        voiceManager.speak(text, perms.voiceGender, perms.voiceLocale)
+        val persona = VoicePersona.fromKey(perms.voicePersona, perms.voiceGender)
+        voiceManager.speakWithPersona(text, persona, perms.voiceLocale)
     }
 
     private suspend fun executeDirective(
@@ -438,32 +467,27 @@ class SathiViewModel(
         _statusBanner.value = "পারমিশন আপডেট করা হয়েছে।"
     }
 
-    fun selectAiModel(modelKey: String) {
-        val model = AiLanguageModel.fromKey(modelKey)
-        val updated = permissionsState.value.copy(selectedModel = model.key)
+    fun selectVoicePersona(personaKey: String, applySuggestedStyle: Boolean = true) {
+        val current = permissionsState.value
+        val persona = VoicePersona.fromKey(personaKey, current.voiceGender)
+        val nextStyle = if (applySuggestedStyle && current.conversationStyle != ConversationStyle.CUSTOM.key) {
+            persona.suggestedStyle.key
+        } else {
+            current.conversationStyle
+        }
+        val updated = current.copy(
+            voicePersona = persona.key,
+            voiceGender = persona.voiceGender,
+            conversationStyle = nextStyle
+        )
         viewModelScope.launch {
             val res = repository.savePermissions(currentUserId, updated)
             if (res.isSuccess) {
-                _statusBanner.value = "মডেল নির্বাচিত হয়েছে: ${model.displayName} ✨"
+                _statusBanner.value = "ভয়েস নির্বাচিত হয়েছে: ${persona.displayNameBn} ✨"
             } else {
-                _statusBanner.value = "মডেল পরিবর্তন সংরক্ষণ করা যায়নি।"
+                _statusBanner.value = "ভয়েস পরিবর্তন সংরক্ষণ করা যায়নি।"
             }
         }
-    }
-
-    fun saveOnlineApiConfig(apiKey: String, endpoint: String) {
-        configStore.saveConfig(apiKey, endpoint)
-        _chatTurnError.value = null
-        _statusBanner.value = if (apiKey.trim().isNotBlank()) {
-            "অনলাইন Gemini API Key সংরক্ষিত হয়েছে 🔑✨"
-        } else {
-            "অনলাইন API সেটিংস আপডেট হয়েছে।"
-        }
-    }
-
-    fun clearOnlineApiKey() {
-        configStore.clearUserApiKey()
-        _statusBanner.value = "সংরক্ষিত API Key মুছে ফেলা হয়েছে।"
     }
 
     fun updatePermissions(updated: DevicePermissions) {
@@ -479,19 +503,19 @@ class SathiViewModel(
         assistantName: String,
         conversationStyle: String,
         customStylePrompt: String,
-        voiceGender: String,
-        voiceLocale: String,
-        selectedModel: String = permissionsState.value.selectedModel
+        voicePersonaKey: String,
+        voiceLocale: String
     ) {
         val current = permissionsState.value
+        val persona = VoicePersona.fromKey(voicePersonaKey, current.voiceGender)
         val cleanName = assistantName.trim().ifBlank { "সাথী" }.take(40)
         val updated = current.copy(
             assistantName = cleanName,
             conversationStyle = conversationStyle,
             customStylePrompt = customStylePrompt.trim().take(300),
-            voiceGender = voiceGender,
+            voiceGender = persona.voiceGender,
             voiceLocale = voiceLocale,
-            selectedModel = selectedModel
+            voicePersona = persona.key
         )
         viewModelScope.launch {
             val res = repository.savePermissions(currentUserId, updated)
@@ -504,11 +528,13 @@ class SathiViewModel(
     }
 
     fun testAssistantVoice(
-        voiceGender: String,
+        voicePersonaKey: String,
         voiceLocale: String = permissionsState.value.voiceLocale
     ) {
-        val aiName = permissionsState.value.assistantName.ifBlank { "সাথী" }
-        voiceManager.testVoice(voiceGender, aiName, voiceLocale)
+        val perms = permissionsState.value
+        val persona = VoicePersona.fromKey(voicePersonaKey, perms.voiceGender)
+        val aiName = perms.assistantName.ifBlank { "সাথী" }
+        voiceManager.testVoice(persona.key, persona.voiceGender, aiName, voiceLocale)
     }
 
     fun addOrUpdateTask(
@@ -552,12 +578,60 @@ class SathiViewModel(
         }
     }
 
+    fun updateUserProfile(
+        displayName: String,
+        nickname: String,
+        bio: String,
+        email: String,
+        googlePhotoUrl: String,
+        customPhotoUri: String
+    ) {
+        if (_isSavingProfile.value) return
+        val existing = userProfileState.value
+        val cleanName = displayName.trim().take(80)
+        if (cleanName.isEmpty()) {
+            _statusBanner.value = "অনুগ্রহ করে ডিসপ্লে নাম লিখুন।"
+            return
+        }
+        val updated = existing.copy(
+            userId = currentUserId,
+            displayName = cleanName,
+            nickname = nickname.trim().take(50),
+            email = email.trim().take(120),
+            bio = bio.trim().take(300),
+            googlePhotoUrl = googlePhotoUrl.trim().take(500),
+            customPhotoUri = customPhotoUri.trim().take(500)
+        )
+        viewModelScope.launch {
+            _isSavingProfile.value = true
+            val res = repository.saveUserProfile(currentUserId, updated)
+            if (res.isSuccess) {
+                runCatching {
+                    val firebaseUser = Firebase.auth.currentUser
+                    if (firebaseUser != null && firebaseUser.uid == currentUserId &&
+                        firebaseUser.displayName != cleanName
+                    ) {
+                        val req = userProfileChangeRequest {
+                            this.displayName = cleanName
+                        }
+                        firebaseUser.updateProfile(req).await()
+                    }
+                }
+                _statusBanner.value = "প্রোফাইল সফলভাবে আপডেট হয়েছে ✨"
+            } else {
+                _statusBanner.value = "প্রোফাইল সংরক্ষণ করা যায়নি। আবার চেষ্টা করুন।"
+            }
+            _isSavingProfile.value = false
+        }
+    }
+
     fun generateSmartPlan() {
         val currentTasks = (tasksState.value as? DataUiState.Success)?.data ?: emptyList()
         val currentPerms = permissionsState.value
+        val currentProfile = userProfileState.value
         viewModelScope.launch {
             _isGeneratingPlan.value = true
-            val res = aiEngine.generateSmartDayPlan(currentTasks, currentPerms)
+            val res = aiEngine.generateSmartDayPlan(currentTasks, currentPerms, currentProfile)
             res.fold(
                 onSuccess = { _smartPlanText.value = it },
                 onFailure = { _statusBanner.value = it.localizedMessage ?: "রুটিন তৈরি করা যায়নি।" }
@@ -624,7 +698,7 @@ class SathiViewModel(
             "en-US" -> "en"
             else -> perms.assistantLanguage
         }
-        voiceManager.startListening(langForStt) { recognized ->
+        voiceManager.startListening(langForStt, perms.voiceLocale) { recognized ->
             sendUserMessage(recognized, activity)
         }
     }
