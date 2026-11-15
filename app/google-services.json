@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "1056719363278",
+    "project_id": "sathi-ai-6db27",
+    "storage_bucket": "sathi-ai-6db27.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1056719363278:android:e9e0cad0fce1860f08049f",
+        "android_client_info": {
+          "package_name": "com.aistudio.sathiai.qrxmzk"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1056719363278-8v3fkmkrt9mhtdtl8bqpv7t3j246osab.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBCe68ZmbptxE10chb0rz8AQn3wR3Pgq50"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1056719363278-8v3fkmkrt9mhtdtl8bqpv7t3j246osab.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
