@@ -211,6 +211,15 @@ class SathiAiEngine(private val context: Context) {
         return ACTION_INTENT_KEYWORDS.any { lower.contains(it) }
     }
 
+    fun warmUp() {
+        if (!isFirebaseReady(context)) return
+        // Touch lazy model instances on a background thread so first user message skips initialization cost
+        runCatching {
+            primaryChatModel
+            fallbackChatModel
+        }
+    }
+
     suspend fun processUserTurn(
         userMessage: String,
         tasks: List<DailyTask>,
@@ -237,9 +246,18 @@ class SathiAiEngine(private val context: Context) {
             )
         }
 
-        val prompt = buildContextPrompt(userMessage, tasks, permissions, recentHistory, persona, userProfile)
+        val isActionTurn = isLikelyActionOrDeviceIntent(userMessage)
+        val prompt = buildContextPrompt(
+            userMessage = userMessage,
+            tasks = tasks,
+            permissions = permissions,
+            recentHistory = recentHistory,
+            persona = persona,
+            userProfile = userProfile,
+            includeTasksAndPermissions = isActionTurn
+        )
 
-        return if (isLikelyActionOrDeviceIntent(userMessage)) {
+        return if (isActionTurn) {
             executeStructuredWithRetry(prompt, onPartialReply)
         } else {
             executeStreamingChatWithRetry(prompt, onPartialReply)
@@ -266,14 +284,21 @@ class SathiAiEngine(private val context: Context) {
             throw firstError
         }
 
-        // Refresh App Check token if needed before automatic retry
+        // Fail fast on non-retryable quota or client validation errors
+        if (firstError != null && isNonRetryableError(firstError)) {
+            return Result.failure(
+                IllegalStateException(formatReadableOnlineError(firstError), firstError)
+            )
+        }
+
+        // Refresh App Check token only when server rejected attestation/token
         if (firstError != null && isTokenOrAuthFailure(firstError)) {
             refreshAppCheckTokenQuietly()
         }
 
-        Log.w(TAG, "Primary stream retry via fallback model: ${firstError?.message}")
+        Log.w(TAG, "Primary stream switching to lite fallback model: ${firstError?.message}")
 
-        // Attempt 2: Automatic fast retry with Gemini 3.5 Flash-Lite
+        // Attempt 2: Fast fallback with Gemini 3.5 Flash-Lite
         val fallbackAttempt = runStreamingAttempt(
             model = fallbackChatModel,
             prompt = prompt,
@@ -497,80 +522,68 @@ class SathiAiEngine(private val context: Context) {
         permissions: DevicePermissions,
         recentHistory: List<ChatMessageRecord>,
         persona: VoicePersona,
-        userProfile: UserProfile?
+        userProfile: UserProfile?,
+        includeTasksAndPermissions: Boolean
     ): String {
-        val taskContext = if (tasks.isEmpty()) {
-            "No tasks currently saved."
-        } else {
-            tasks.take(20).joinToString("\n") { t ->
-                "- id=${t.id} | title=${t.title} | cat=${t.category} | prio=${t.priority} | time=${t.scheduledTime} | done=${t.completed}"
+        val styleEnum = ConversationStyle.fromKey(permissions.conversationStyle)
+        val personalityContext = buildString {
+            append("name=").append(permissions.assistantName.ifBlank { "সাথী" })
+            append(" | lang=").append(permissions.assistantLanguage)
+            append(" | voice=").append(persona.voiceGender).append("/").append(persona.displayNameBn)
+            append(" | style=").append(styleEnum.key).append(" (").append(styleEnum.instruction).append(")")
+            if (permissions.customStylePrompt.isNotBlank()) {
+                append(" | custom=").append(permissions.customStylePrompt)
             }
         }
 
-        val styleEnum = ConversationStyle.fromKey(permissions.conversationStyle)
-        val personalityContext = """
-            assistantName=${permissions.assistantName.ifBlank { "সাথী" }}
-            assistantLanguage=${permissions.assistantLanguage}
-            voiceGender=${persona.voiceGender}
-            voicePersona=${persona.displayNameBn} (${persona.personaToneHint})
-            voiceLocale=${permissions.voiceLocale}
-            conversationStyle=${styleEnum.key} (${styleEnum.instruction})
-            customStylePrompt=${permissions.customStylePrompt}
-        """.trimIndent()
-
         val preferredUser = userProfile?.preferredAddressName.orEmpty()
         val userBio = userProfile?.bio.orEmpty()
-        val userProfileContext = if (preferredUser.isNotBlank() || userBio.isNotBlank()) {
-            """
-            [User Profile]
-            preferredAddress=${preferredUser.ifBlank { "Not specified" }}
-            displayName=${userProfile?.displayName.orEmpty()}
-            bio=${userBio.ifBlank { "None" }}
-            Address the user naturally as their preferredAddress when appropriate.
-            """.trimIndent()
+        val userProfileLine = if (preferredUser.isNotBlank() || userBio.isNotBlank()) {
+            "[User] callAs=${preferredUser.ifBlank { userProfile?.displayName.orEmpty() }} | bio=$userBio"
         } else {
-            "[User Profile]\nNo custom nickname or bio set."
+            ""
         }
 
-        val permContext = """
-            masterEnabled=${permissions.masterEnabled}
-            allowVoiceMic=${permissions.allowVoiceMic}
-            allowTtsSpeech=${permissions.allowTtsSpeech}
-            allowFlashlight=${permissions.allowFlashlight}
-            allowVolumeControl=${permissions.allowVolumeControl}
-            allowDisplayAndSettings=${permissions.allowDisplayAndSettings}
-            allowAlarmsAndTimers=${permissions.allowAlarmsAndTimers}
-            allowDialer=${permissions.allowDialer}
-            allowNotifications=${permissions.allowNotifications}
-        """.trimIndent()
+        val historyText = recentHistory
+            .takeLast(6)
+            .joinToString("\n") { msg -> "${msg.sender}: ${msg.text.take(240)}" }
 
-        val historyText = recentHistory.takeLast(10).joinToString("\n") { msg ->
-            "${msg.sender}: ${msg.text}"
+        if (!includeTasksAndPermissions) {
+            return buildString {
+                append("[Assistant Personality]\n").append(personalityContext)
+                if (userProfileLine.isNotBlank()) append("\n").append(userProfileLine)
+                if (historyText.isNotBlank()) append("\n\n[Recent Chat]\n").append(historyText)
+                append("\n\n[User Message]\n").append(userMessage)
+            }
         }
 
-        return """
-            [Assistant Personality]
-            $personalityContext
+        val taskContext = if (tasks.isEmpty()) {
+            "None"
+        } else {
+            tasks.take(15).joinToString("\n") { t ->
+                "- id=${t.id}|${t.title}|${t.category}|${t.priority}|${t.scheduledTime}|done=${t.completed}"
+            }
+        }
 
-            $userProfileContext
+        val permContext = "master=${permissions.masterEnabled}, mic=${permissions.allowVoiceMic}, " +
+            "tts=${permissions.allowTtsSpeech}, flash=${permissions.allowFlashlight}, " +
+            "vol=${permissions.allowVolumeControl}, display=${permissions.allowDisplayAndSettings}, " +
+            "alarm=${permissions.allowAlarmsAndTimers}, dial=${permissions.allowDialer}, " +
+            "notify=${permissions.allowNotifications}"
 
-            [User Permission Settings]
-            $permContext
-
-            [Current Daily Tasks]
-            $taskContext
-
-            [Recent Conversation]
-            $historyText
-
-            [Latest User Message]
-            $userMessage
-        """.trimIndent()
+        return buildString {
+            append("[Assistant Personality]\n").append(personalityContext)
+            if (userProfileLine.isNotBlank()) append("\n").append(userProfileLine)
+            append("\n[Permissions] ").append(permContext)
+            append("\n[Daily Tasks]\n").append(taskContext)
+            if (historyText.isNotBlank()) append("\n[Recent Chat]\n").append(historyText)
+            append("\n[Latest User Message]\n").append(userMessage)
+        }
     }
 
     private suspend fun refreshAppCheckTokenQuietly() {
         runCatching {
-            withTimeout(3_000L) {
+            withTimeout(1_500L) {
                 FirebaseAppCheck.getInstance().getAppCheckToken(true).await()
             }
         }.onFailure {
@@ -585,6 +598,14 @@ class SathiAiEngine(private val context: Context) {
             lower.contains("appcheck") ||
             lower.contains("token") ||
             lower.contains("attestation")
+    }
+
+    private fun isNonRetryableError(e: Throwable): Boolean {
+        val lower = e.localizedMessage.orEmpty().lowercase()
+        return lower.contains("429") ||
+            lower.contains("quota") ||
+            lower.contains("safety") ||
+            lower.contains("blocked")
     }
 
     private fun formatReadableOnlineError(e: Throwable?): String {
@@ -612,9 +633,9 @@ class SathiAiEngine(private val context: Context) {
         const val TAG = "SathiAiEngine"
         const val PRIMARY_GEMINI_MODEL = "gemini-3.8-flash"
         const val FALLBACK_GEMINI_MODEL = "gemini-3.5-flash-lite"
-        const val PRIMARY_STREAM_TIMEOUT_MS = 20_000L
-        const val PRIMARY_STRUCTURED_TIMEOUT_MS = 18_000L
-        const val FALLBACK_TIMEOUT_MS = 15_000L
+        const val PRIMARY_STREAM_TIMEOUT_MS = 30_000L
+        const val PRIMARY_STRUCTURED_TIMEOUT_MS = 30_000L
+        const val FALLBACK_TIMEOUT_MS = 25_000L
 
         val ACTION_TYPES = listOf(
             "NONE",

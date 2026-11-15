@@ -116,8 +116,8 @@ enum class VoicePersona(
         badge = "Female Voice 1",
         descriptionBn = "মৃদু, আন্তরিক ও বন্ধুত্বপূর্ণ নারী কণ্ঠ (দৈনন্দিন আড্ডা ও সহায়তার জন্য)",
         voiceGender = "FEMALE",
-        pitch = 1.10f,
-        speechRate = 0.98f,
+        pitch = 1.03f,
+        speechRate = 0.96f,
         voiceVariantIndex = 0,
         suggestedStyle = ConversationStyle.FRIENDLY,
         personaToneHint = "Warm, caring, and reassuring companion tone."
@@ -129,8 +129,8 @@ enum class VoicePersona(
         badge = "Female Voice 2",
         descriptionBn = "স্পষ্ট, উজ্জ্বল ও চটপটে নারী কণ্ঠ (দ্রুত তথ্য ও রিমাইন্ডারের জন্য)",
         voiceGender = "FEMALE",
-        pitch = 1.24f,
-        speechRate = 1.07f,
+        pitch = 1.09f,
+        speechRate = 1.02f,
         voiceVariantIndex = 1,
         suggestedStyle = ConversationStyle.CONCISE,
         personaToneHint = "Bright, crisp, and energetic helper tone."
@@ -142,8 +142,8 @@ enum class VoicePersona(
         badge = "Male Voice 1",
         descriptionBn = "শান্ত, গভীর ও মার্জিত পুরুষ কণ্ঠ (গুরুত্বপূর্ণ কাজ ও পরামর্শের জন্য)",
         voiceGender = "MALE",
-        pitch = 0.76f,
-        speechRate = 0.93f,
+        pitch = 0.90f,
+        speechRate = 0.95f,
         voiceVariantIndex = 0,
         suggestedStyle = ConversationStyle.POLITE,
         personaToneHint = "Calm, steady, respectful, and thoughtful tone."
@@ -155,8 +155,8 @@ enum class VoicePersona(
         badge = "Male Voice 2",
         descriptionBn = "সহজ, স্বতঃস্ফূর্ত ও প্রাণবন্ত পুরুষ কণ্ঠ (সক্রিয় আড্ডা ও রুটিনের জন্য)",
         voiceGender = "MALE",
-        pitch = 0.92f,
-        speechRate = 1.05f,
+        pitch = 0.96f,
+        speechRate = 1.01f,
         voiceVariantIndex = 1,
         suggestedStyle = ConversationStyle.CASUAL,
         personaToneHint = "Lively, natural, upbeat, and friendly buddy tone."

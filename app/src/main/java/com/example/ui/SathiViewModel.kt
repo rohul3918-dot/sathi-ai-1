@@ -24,6 +24,7 @@ import com.google.firebase.auth.auth
 import com.google.firebase.auth.userProfileChangeRequest
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -163,6 +164,12 @@ class SathiViewModel(
         _pendingPermissionPrompt.value = null
     }
 
+    fun warmUpAi() {
+        viewModelScope.launch(Dispatchers.IO) {
+            aiEngine.warmUp()
+        }
+    }
+
     fun sendUserMessage(
         rawText: String,
         activity: Activity?,
@@ -178,19 +185,22 @@ class SathiViewModel(
             _pendingPermissionPrompt.value = null
             val baseOrder = System.currentTimeMillis()
 
-            if (!skipAddingUserBubble) {
-                repository.addMessage(
-                    userId = currentUserId,
-                    sender = "USER",
-                    text = cleanText,
-                    clientOrder = baseOrder
-                )
-            }
-
             val currentTasks = (tasksState.value as? DataUiState.Success)?.data ?: emptyList()
             val currentPerms = permissionsState.value
             val recentHistory = messagesState.value
             val currentProfile = userProfileState.value
+
+            // Persist the user message concurrently so the AI network call starts immediately
+            val saveUserMsgJob = if (!skipAddingUserBubble) {
+                launch {
+                    repository.addMessage(
+                        userId = currentUserId,
+                        sender = "USER",
+                        text = cleanText,
+                        clientOrder = baseOrder
+                    )
+                }
+            } else null
 
             val aiResult = aiEngine.processUserTurn(
                 userMessage = cleanText,
@@ -203,6 +213,7 @@ class SathiViewModel(
                 }
             )
 
+            saveUserMsgJob?.join()
             _streamingReplyText.value = null
 
             aiResult.fold(
@@ -487,6 +498,21 @@ class SathiViewModel(
                 _statusBanner.value = "ভয়েস নির্বাচিত হয়েছে: ${persona.displayNameBn} ✨"
             } else {
                 _statusBanner.value = "ভয়েস পরিবর্তন সংরক্ষণ করা যায়নি।"
+            }
+        }
+    }
+
+    fun renameAssistant(newName: String) {
+        val cleanName = newName.trim().ifBlank { "সাথী" }.take(40)
+        val current = permissionsState.value
+        if (cleanName == current.assistantName) return
+        val updated = current.copy(assistantName = cleanName)
+        viewModelScope.launch {
+            val res = repository.savePermissions(currentUserId, updated)
+            if (res.isSuccess) {
+                _statusBanner.value = "অ্যাসিস্ট্যান্টের নাম '$cleanName' সেট করা হয়েছে ✨"
+            } else {
+                _statusBanner.value = "নাম সংরক্ষণ করা যায়নি।"
             }
         }
     }

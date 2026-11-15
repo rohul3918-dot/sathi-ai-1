@@ -6,15 +6,25 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -22,18 +32,25 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.RecordVoiceOver
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -76,6 +93,7 @@ import com.example.data.repository.SathiDataStore
 import com.example.data.repository.SathiRepository
 import com.example.device.DeviceControlManager
 import com.example.device.VoiceAssistantManager
+import com.example.ui.DataUiState
 import com.example.ui.SathiViewModel
 import com.example.ui.components.VoicePersonaSheet
 import com.example.ui.screens.AssistantChatScreen
@@ -251,13 +269,23 @@ private fun SathiHomeShell(
     )
 
     var showPersonaSheet by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
     var isSigningIn by remember { mutableStateOf(false) }
     var authErrorMessage by remember { mutableStateOf<String?>(null) }
 
     val permissions by viewModel.permissionsState.collectAsStateWithLifecycle()
+    val tasksState by viewModel.tasksState.collectAsStateWithLifecycle()
     val userProfile by viewModel.userProfileState.collectAsStateWithLifecycle()
     val statusBanner by viewModel.statusBanner.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    val pendingTaskCount = (tasksState as? DataUiState.Success)?.data?.count { !it.completed } ?: 0
+
+    LaunchedEffect(firebaseReady) {
+        if (firebaseReady) {
+            viewModel.warmUpAi()
+        }
+    }
 
     LaunchedEffect(currentUserId, isSignedIn, userDisplayName, userEmail, userPhotoUrl) {
         if (isSignedIn) {
@@ -350,49 +378,203 @@ private fun SathiHomeShell(
         )
     }
 
+    if (showRenameDialog) {
+        QuickRenameAssistantDialog(
+            currentName = aiName,
+            onConfirm = { newName ->
+                viewModel.renameAssistant(newName)
+                showRenameDialog = false
+            },
+            onDismiss = { showRenameDialog = false }
+        )
+    }
+
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             when (currentRoute) {
                 SathiRoute.CHAT -> {
-                    TopAppBar(
-                        title = {
+                    Surface(
+                        color = MaterialTheme.colorScheme.background
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .windowInsetsPadding(WindowInsets.statusBars)
+                        ) {
+                            // Row 1: One-tap Assistant Name + Signed-in Profile / Sign In + Settings
                             Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                                    onClick = { showRenameDialog = true },
+                                    modifier = Modifier
+                                        .weight(1f, fill = false)
+                                        .testTag("top_bar_assistant_name_chip")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = aiName,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Icon(
+                                            imageVector = Icons.Rounded.Edit,
+                                            contentDescription = "অ্যাসিস্ট্যান্টের নাম পরিবর্তন",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+                                }
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    if (isSignedIn) {
+                                        val topBarUserName = effectiveProfileName
+                                            .takeIf { it.isNotBlank() && it != "সাইন-ইন করুন" }
+                                            ?: userProfile.nickname.ifBlank { "প্রোফাইল" }
+                                        Surface(
+                                            shape = RoundedCornerShape(16.dp),
+                                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+                                            onClick = { onRouteChange(SathiRoute.PROFILE) },
+                                            modifier = Modifier
+                                                .padding(end = 2.dp)
+                                                .testTag("header_auth_button")
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(start = 4.dp, end = 10.dp, top = 5.dp, bottom = 5.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(24.dp)
+                                                        .border(1.5.dp, EmeraldSuccess, CircleShape)
+                                                        .padding(1.5.dp)
+                                                ) {
+                                                    ProfileAvatarImage(
+                                                        photoUrl = effectiveProfilePhoto,
+                                                        displayName = topBarUserName,
+                                                        modifier = Modifier.fillMaxSize()
+                                                    )
+                                                }
+                                                Text(
+                                                    text = topBarUserName,
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.widthIn(max = 96.dp)
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        Surface(
+                                            shape = RoundedCornerShape(14.dp),
+                                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f),
+                                            onClick = triggerGoogleSignIn,
+                                            enabled = !isSigningIn,
+                                            modifier = Modifier
+                                                .padding(end = 2.dp)
+                                                .testTag("header_auth_button")
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                            ) {
+                                                if (isSigningIn) {
+                                                    CircularProgressIndicator(
+                                                        modifier = Modifier.size(14.dp),
+                                                        strokeWidth = 2.dp,
+                                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                                    )
+                                                    Text(
+                                                        text = "Signing in...",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                                    )
+                                                } else {
+                                                    Icon(
+                                                        imageVector = Icons.Outlined.AccountCircle,
+                                                        contentDescription = "Google Sign-In",
+                                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                    Text(
+                                                        text = "Sign In",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                    IconButton(
+                                        onClick = { onRouteChange(SathiRoute.SETTINGS) },
+                                        modifier = Modifier.testTag("nav_settings_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Settings,
+                                            contentDescription = "সেটিংস"
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Row 2: Instant one-tap Voice Number selector + Daily Tasks directly on top bar
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(horizontal = 14.dp, vertical = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text(
-                                    text = aiName,
-                                    style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f, fill = false)
-                                )
                                 Surface(
                                     shape = RoundedCornerShape(14.dp),
                                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
                                     onClick = { showPersonaSheet = true },
-                                    modifier = Modifier.testTag("active_voice_persona_chip")
+                                    modifier = Modifier
+                                        .heightIn(min = 36.dp)
+                                        .testTag("active_voice_persona_chip")
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                                     ) {
                                         Icon(
                                             imageVector = Icons.Rounded.RecordVoiceOver,
                                             contentDescription = null,
                                             tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(14.dp)
+                                            modifier = Modifier.size(16.dp)
                                         )
                                         Text(
                                             text = activePersona.shortLabel,
                                             style = MaterialTheme.typography.labelMedium,
                                             fontWeight = FontWeight.SemiBold,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1
                                         )
                                         Icon(
                                             imageVector = Icons.Rounded.KeyboardArrowDown,
@@ -401,116 +583,42 @@ private fun SathiHomeShell(
                                         )
                                     }
                                 }
-                            }
-                        },
-                        actions = {
-                            IconButton(
-                                onClick = { onRouteChange(SathiRoute.TASKS) },
-                                modifier = Modifier.testTag("nav_tasks_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.Checklist,
-                                    contentDescription = "দৈনন্দিন কাজ"
-                                )
-                            }
-                            if (isSignedIn) {
-                                val topBarUserName = effectiveProfileName
-                                    .takeIf { it.isNotBlank() && it != "সাইন-ইন করুন" }
-                                    ?: userProfile.nickname.ifBlank { "প্রোফাইল" }
+
                                 Surface(
-                                    shape = RoundedCornerShape(16.dp),
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
-                                    onClick = { onRouteChange(SathiRoute.PROFILE) },
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f),
+                                    onClick = { onRouteChange(SathiRoute.TASKS) },
                                     modifier = Modifier
-                                        .padding(end = 2.dp)
-                                        .testTag("header_auth_button")
+                                        .heightIn(min = 36.dp)
+                                        .testTag("nav_tasks_button")
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(start = 4.dp, end = 8.dp, top = 4.dp, bottom = 4.dp),
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                                     ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(24.dp)
-                                                .border(1.5.dp, EmeraldSuccess, CircleShape)
-                                                .padding(1.5.dp)
-                                        ) {
-                                            ProfileAvatarImage(
-                                                photoUrl = effectiveProfilePhoto,
-                                                displayName = topBarUserName,
-                                                modifier = Modifier.fillMaxSize()
-                                            )
-                                        }
+                                        Icon(
+                                            imageVector = Icons.Outlined.Checklist,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            modifier = Modifier.size(16.dp)
+                                        )
                                         Text(
-                                            text = topBarUserName,
+                                            text = if (pendingTaskCount > 0) "দৈনন্দিন কাজ ($pendingTaskCount)" else "দৈনন্দিন কাজ",
                                             style = MaterialTheme.typography.labelMedium,
                                             fontWeight = FontWeight.SemiBold,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.widthIn(max = 84.dp)
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            maxLines = 1
                                         )
                                     }
                                 }
-                            } else {
-                                Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f),
-                                    onClick = triggerGoogleSignIn,
-                                    enabled = !isSigningIn,
-                                    modifier = Modifier
-                                        .padding(end = 2.dp)
-                                        .testTag("header_auth_button")
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        if (isSigningIn) {
-                                            CircularProgressIndicator(
-                                                modifier = Modifier.size(14.dp),
-                                                strokeWidth = 2.dp,
-                                                color = MaterialTheme.colorScheme.onPrimaryContainer
-                                            )
-                                            Text(
-                                                text = "Signing in...",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.onPrimaryContainer
-                                            )
-                                        } else {
-                                            Icon(
-                                                imageVector = Icons.Outlined.AccountCircle,
-                                                contentDescription = "Google Sign-In",
-                                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                            Text(
-                                                text = "Sign In",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.onPrimaryContainer
-                                            )
-                                        }
-                                    }
-                                }
                             }
-                            IconButton(
-                                onClick = { onRouteChange(SathiRoute.SETTINGS) },
-                                modifier = Modifier.testTag("nav_settings_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.Settings,
-                                    contentDescription = "সেটিংস"
-                                )
-                            }
-                        },
-                        colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = MaterialTheme.colorScheme.background
-                        )
-                    )
+
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.14f)
+                            )
+                        }
+                    }
                 }
                 SathiRoute.TASKS -> {
                     TopAppBar(
@@ -627,3 +735,71 @@ private fun SathiHomeShell(
         }
     }
 }
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun QuickRenameAssistantDialog(
+    currentName: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var nameInput by remember(currentName) { mutableStateOf(currentName) }
+    val presetNames = listOf("সাথী", "কুসুম", "নীরা", "বন্ধু")
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "অ্যাসিস্ট্যান্টের নাম পরিবর্তন",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "আপনি যে নামে ডাকবেন, অ্যাসিস্ট্যান্ট সেই নামেই সাড়া দেবে।",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { if (it.length <= 40) nameInput = it },
+                    label = { Text("অ্যাসিস্ট্যান্টের নাম") },
+                    placeholder = { Text("যেমন: কুসুম বা সাথী") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("quick_rename_input")
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    presetNames.forEach { preset ->
+                        FilterChip(
+                            selected = nameInput.trim() == preset,
+                            onClick = { nameInput = preset },
+                            label = { Text(preset) }
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(nameInput.trim().ifBlank { "সাথী" }) },
+                modifier = Modifier.testTag("quick_rename_save_button")
+            ) {
+                Text("সংরক্ষণ")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("বাতিল")
+            }
+        }
+    )
+}
+

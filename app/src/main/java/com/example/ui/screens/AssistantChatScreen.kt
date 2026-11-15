@@ -129,10 +129,19 @@ fun AssistantChatScreen(
         viewModel.dismissPermissionPrompt()
     }
 
-    LaunchedEffect(messages.size, isThinking, streamingReply, turnError) {
+    LaunchedEffect(messages.size, isThinking, turnError) {
         val totalItems = messages.size + (if (isThinking || !streamingReply.isNullOrBlank()) 1 else 0) + (if (turnError != null) 1 else 0)
-        if (totalItems > 0 && messages.isNotEmpty()) {
+        if (totalItems > 0) {
             listState.animateScrollToItem((totalItems - 1).coerceAtLeast(0))
+        }
+    }
+
+    LaunchedEffect(streamingReply) {
+        if (!streamingReply.isNullOrBlank()) {
+            val totalItems = messages.size + 1 + (if (turnError != null) 1 else 0)
+            if (totalItems > 0) {
+                listState.scrollToItem((totalItems - 1).coerceAtLeast(0))
+            }
         }
     }
 

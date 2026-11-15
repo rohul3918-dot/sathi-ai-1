@@ -2,6 +2,7 @@ package com.example.device
 
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -46,6 +47,12 @@ class VoiceAssistantManager(private val context: Context) {
             tts = TextToSpeech(context.applicationContext) { status ->
                 if (status == TextToSpeech.SUCCESS) {
                     ttsReady = true
+                    tts?.setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
                     val bnLocale = Locale.forLanguageTag("bn-BD")
                     val res = tts?.setLanguage(bnLocale)
                     if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
@@ -103,7 +110,7 @@ class VoiceAssistantManager(private val context: Context) {
         persona: VoicePersona,
         voiceLocale: String = "bn-BD"
     ) {
-        val cleanForSpeech = stripDecorativeEmojis(text)
+        val cleanForSpeech = sanitizeTextForTts(text)
         if (cleanForSpeech.isBlank()) return
         if (!ttsReady) {
             pendingUtterance = PendingUtterance(cleanForSpeech, persona, voiceLocale)
@@ -149,13 +156,11 @@ class VoiceAssistantManager(private val context: Context) {
         voiceLocale: String = "bn-BD"
     ) {
         val persona = VoicePersona.fromKey(voicePersonaKey, voiceGender)
-        val isMale = persona.voiceGender == "MALE"
         val sample = when {
             voiceLocale.equals("en-US", ignoreCase = true) -> {
                 "Hello, I am $assistantName, speaking with ${persona.badge}."
             }
-            isMale -> "হ্যালো, আমি $assistantName। এখন ${persona.shortLabel} কণ্ঠে কথা বলছি।"
-            else -> "হ্যালো, আমি $assistantName। এখন ${persona.shortLabel} কণ্ঠে কথা বলছি।"
+            else -> "হ্যালো, আমি $assistantName, এখন ${persona.shortLabel} কণ্ঠে কথা বলছি।"
         }
         speakWithPersona(sample, persona, voiceLocale)
     }
@@ -163,21 +168,30 @@ class VoiceAssistantManager(private val context: Context) {
     private fun applyPersonaProfile(locale: Locale, persona: VoicePersona) {
         val engine = tts ?: return
         val wantMale = persona.voiceGender.equals("MALE", ignoreCase = true)
-        val matchedVoice = findMatchingVoice(engine, locale, wantMale, persona.voiceVariantIndex)
+        val (matchedVoice, matchedGenderExplicitly) = findMatchingVoice(
+            engine = engine,
+            locale = locale,
+            wantMale = wantMale,
+            variantIndex = persona.voiceVariantIndex
+        )
 
         if (matchedVoice != null) {
             engine.voice = matchedVoice
-            engine.setPitch(persona.pitch)
+            // Gentle pitch tuning when a native gendered voice is already active keeps speech natural
+            val naturalPitch = if (matchedGenderExplicitly) {
+                when (persona) {
+                    VoicePersona.FEMALE_WARM -> 1.00f
+                    VoicePersona.FEMALE_CRISP -> 1.05f
+                    VoicePersona.MALE_CALM -> 0.96f
+                    VoicePersona.MALE_ENERGETIC -> 1.02f
+                }
+            } else {
+                persona.pitch
+            }
+            engine.setPitch(naturalPitch)
             engine.setSpeechRate(persona.speechRate)
         } else {
-            // Distinct pitch & speech rate guarantees clearly audible Male/Female and Voice 1/2 differences
-            val fallbackPitch = when (persona) {
-                VoicePersona.FEMALE_WARM -> 1.12f
-                VoicePersona.FEMALE_CRISP -> 1.26f
-                VoicePersona.MALE_CALM -> 0.72f
-                VoicePersona.MALE_ENERGETIC -> 0.86f
-            }
-            engine.setPitch(fallbackPitch)
+            engine.setPitch(persona.pitch)
             engine.setSpeechRate(persona.speechRate)
         }
     }
@@ -187,44 +201,51 @@ class VoiceAssistantManager(private val context: Context) {
         locale: Locale,
         wantMale: Boolean,
         variantIndex: Int
-    ): Voice? {
+    ): Pair<Voice?, Boolean> {
         val voices = try {
-            engine.voices ?: return null
+            engine.voices ?: return null to false
         } catch (_: Exception) {
-            return null
+            return null to false
         }
-        val langMatches = voices.filter {
-            it.locale.language.equals(locale.language, ignoreCase = true) && !it.isNetworkConnectionRequired
+        val exactLocaleMatches = voices.filter {
+            it.locale.language.equals(locale.language, ignoreCase = true) &&
+                it.locale.country.equals(locale.country, ignoreCase = true) &&
+                !it.isNetworkConnectionRequired
+        }
+        val langMatches = exactLocaleMatches.ifEmpty {
+            voices.filter {
+                it.locale.language.equals(locale.language, ignoreCase = true) &&
+                    !it.isNetworkConnectionRequired
+            }
         }.ifEmpty {
             voices.filter { it.locale.language.equals(locale.language, ignoreCase = true) }
-        }.sortedBy { it.name }
+        }.sortedWith(compareByDescending<Voice> { it.quality }.thenBy { it.name })
 
-        if (langMatches.isEmpty()) return null
+        if (langMatches.isEmpty()) return null to false
 
         val maleHints = listOf("-m-", "_m_", "male", "bgd-x-bgd", "bng-x-bng", "iom", "iol", "sfg")
         val femaleHints = listOf("-f-", "_f_", "female", "iol-female", "tpf", "sfc")
 
-        val genderFiltered = if (wantMale) {
-            langMatches.filter { v ->
-                val lower = v.name.lowercase(Locale.ROOT)
-                maleHints.any { lower.contains(it) }
+        val genderFiltered = langMatches.filter { voice ->
+            val lowerName = voice.name.lowercase(Locale.ROOT)
+            val featureMatches = voice.features?.any { feat ->
+                val lowerFeat = feat.lowercase(Locale.ROOT)
+                if (wantMale) lowerFeat.contains("male") && !lowerFeat.contains("female")
+                else lowerFeat.contains("female")
+            } == true
+            val nameMatches = if (wantMale) {
+                maleHints.any { lowerName.contains(it) } && !lowerName.contains("female")
+            } else {
+                femaleHints.any { lowerName.contains(it) }
             }
-        } else {
-            langMatches.filter { v ->
-                val lower = v.name.lowercase(Locale.ROOT)
-                femaleHints.any { lower.contains(it) }
-            }
+            featureMatches || nameMatches
         }
 
-        val pool = genderFiltered.ifEmpty { langMatches }
-        return pool.getOrNull(variantIndex % pool.size)
-    }
-
-    private fun stripDecorativeEmojis(text: String): String {
-        return text.filter { ch ->
-            val type = Character.getType(ch)
-            type != Character.OTHER_SYMBOL.toInt() && type != Character.SURROGATE.toInt()
-        }.replace(Regex("\\s+"), " ").trim()
+        return if (genderFiltered.isNotEmpty()) {
+            genderFiltered[variantIndex % genderFiltered.size] to true
+        } else {
+            langMatches[variantIndex % langMatches.size] to false
+        }
     }
 
     fun stopSpeaking() {
@@ -346,3 +367,56 @@ class VoiceAssistantManager(private val context: Context) {
         tts = null
     }
 }
+
+internal fun sanitizeTextForTts(raw: String): String {
+    if (raw.isBlank()) return ""
+
+    // 1. Preserve readable markdown link labels and drop their URLs
+    var text = raw.replace(Regex("\\[([^\\]]+)]\\([^)]*\\)"), " $1 ")
+
+    // 2. Strip bare URLs and email/web links
+    text = text.replace(Regex("(?:https?://|ftp://|mailto:|www\\.)\\S+", RegexOption.IGNORE_CASE), " ")
+
+    // 3. Strip fenced code block headers/markers
+    text = text.replace(Regex("```[a-zA-Z0-9_+.-]*"), " ")
+
+    // 4. Filter out emojis, surrogates, variation selectors, ZWJ, and non-text symbols
+    val filtered = StringBuilder(text.length)
+    for (ch in text) {
+        if (ch == '\uFE0E' || ch == '\uFE0F' || ch == '\u200D' || ch == '\u20E3') continue
+        val type = Character.getType(ch)
+        if (type == Character.OTHER_SYMBOL.toInt() ||
+            type == Character.SURROGATE.toInt() ||
+            type == Character.CURRENCY_SYMBOL.toInt() ||
+            type == Character.MATH_SYMBOL.toInt() ||
+            type == Character.MODIFIER_SYMBOL.toInt()
+        ) {
+            filtered.append(' ')
+        } else {
+            filtered.append(ch)
+        }
+    }
+    text = filtered.toString()
+
+    // 5. Convert line breaks and clause-ending punctuation into subtle speech pauses (comma)
+    text = text
+        .replace(Regex("[\\r\\n]+"), ", ")
+        .replace(Regex("[!?;:।]+"), ", ")
+        .replace(Regex("(?<!\\d)\\.(?!\\d)"), ", ")
+
+    // 6. Strip all markdown symbols, brackets, quotes, dashes, slashes, and remaining punctuation symbols
+    text = text.replace(
+        Regex("[*#_`~()\\[\\]{}<>【】「」«»„\"'“”‘’/\\\\|@\$%^&+=\\-–—•·…¡¿]"),
+        " "
+    )
+
+    // 7. Collapse whitespace and repeated/dangling commas cleanly
+    text = text
+        .replace(Regex("\\s*,\\s*"), ", ")
+        .replace(Regex("(?:,\\s*){2,}"), ", ")
+        .replace(Regex("\\s+"), " ")
+        .trim(' ', ',', '\t')
+
+    return text
+}
+
