@@ -284,8 +284,9 @@ class SathiAiEngine(private val context: Context) {
             throw firstError
         }
 
-        // Fail fast on non-retryable quota or client validation errors
-        if (firstError != null && isNonRetryableError(firstError)) {
+        // Only short-circuit when blocked by safety policy; for quota/429/timeout/network on primary,
+        // seamlessly fall back to high-volume gemini-3.5-flash-lite.
+        if (firstError != null && isSafetyBlockedError(firstError)) {
             return Result.failure(
                 IllegalStateException(formatReadableOnlineError(firstError), firstError)
             )
@@ -592,20 +593,36 @@ class SathiAiEngine(private val context: Context) {
     }
 
     private fun isTokenOrAuthFailure(e: Throwable): Boolean {
-        val lower = e.localizedMessage.orEmpty().lowercase()
-        return lower.contains("403") ||
+        val lower = collectErrorMessageChain(e).lowercase()
+        return Regex("\\b403\\b").containsMatchIn(lower) ||
             lower.contains("app check") ||
             lower.contains("appcheck") ||
-            lower.contains("token") ||
             lower.contains("attestation")
     }
 
-    private fun isNonRetryableError(e: Throwable): Boolean {
-        val lower = e.localizedMessage.orEmpty().lowercase()
-        return lower.contains("429") ||
-            lower.contains("quota") ||
-            lower.contains("safety") ||
-            lower.contains("blocked")
+    private fun isSafetyBlockedError(e: Throwable): Boolean {
+        val lower = collectErrorMessageChain(e).lowercase()
+        return lower.contains("safety") ||
+            lower.contains("content_filter") ||
+            lower.contains("harm_category")
+    }
+
+    private fun isGenuineRateLimitOrQuotaError(e: Throwable): Boolean {
+        val className = e::class.java.simpleName.lowercase()
+        if (className.contains("quota")) return true
+        val lower = collectErrorMessageChain(e).lowercase()
+        return Regex("\\b429\\b").containsMatchIn(lower) ||
+            lower.contains("resource_exhausted") ||
+            lower.contains("quota exceeded") ||
+            lower.contains("rate limit") ||
+            lower.contains("too many requests")
+    }
+
+    private fun collectErrorMessageChain(e: Throwable): String {
+        return generateSequence(e) { it.cause }
+            .mapNotNull { it.localizedMessage ?: it.message }
+            .distinct()
+            .joinToString(" | ")
     }
 
     private fun formatReadableOnlineError(e: Throwable?): String {
@@ -613,17 +630,16 @@ class SathiAiEngine(private val context: Context) {
         if (e is TimeoutCancellationException) {
             return "নেটওয়ার্ক ধীর হওয়ায় উত্তর আসতে দেরি হচ্ছে। অনুগ্রহ করে Retry করুন ⏳"
         }
-        val raw = e.localizedMessage.orEmpty()
+        val raw = collectErrorMessageChain(e)
         val lower = raw.lowercase()
         return when {
             lower.contains("unable to resolve host") || lower.contains("failed to connect") ||
                 lower.contains("network") || lower.contains("timeout") ->
                 "ইন্টারনেট সংযোগ দুর্বল বা পাওয়া যাচ্ছে না। সংযোগ দেখে আবার চেষ্টা করুন 🌐"
-            lower.contains("403") || lower.contains("app check") || lower.contains("appcheck") ||
-                lower.contains("attestation") ->
-                "সার্ভার যাচাইকরণে (App Check) সাময়িক সমস্যা হয়েছে। দয়া করে আবার Retry চাপুন 🔄"
-            lower.contains("quota") || lower.contains("429") ->
-                "এই মুহূর্তে চাপ বেশি আছে, কিছুক্ষণ পর আবার চেষ্টা করুন ⏳"
+            isTokenOrAuthFailure(e) ->
+                "Firebase App Check যাচাইকরণে সমস্যা হয়েছে। অনুগ্রহ করে কিছুক্ষণ পর আবার চেষ্টা করুন 🔄"
+            isGenuineRateLimitOrQuotaError(e) ->
+                "এই মুহূর্তে AI সার্ভার সাময়িকভাবে ব্যস্ত রয়েছে, কিছুক্ষণ পর আবার চেষ্টা করুন ⏳"
             raw.isNotBlank() -> raw
             else -> "অনলাইন AI এর সাথে সংযোগ করা যায়নি। আবার চেষ্টা করুন।"
         }
@@ -654,16 +670,16 @@ class SathiAiEngine(private val context: Context) {
         )
 
         val ACTION_INTENT_KEYWORDS = listOf(
-            "ফ্ল্যাশ", "টর্চ", "flash", "torch", "লাইট",
-            "ভলিউম", "সাউন্ড", "আওয়াজ", "volume", "sound", "mute",
-            "ব্রাইটনেস", "আলো", "brightness", "dim",
+            "ফ্ল্যাশ", "টর্চ", "flashlight", "torch",
+            "ভলিউম", "volume", "mute",
+            "ব্রাইটনেস", "স্ক্রিনের আলো", "brightness",
             "ওয়াইফাই", "wifi", "wi-fi", "ব্লুটুথ", "bluetooth",
             "অ্যালার্ম", "alarm", "টাইমার", "timer",
-            "ডায়াল", "কল কর", "ফোন কর", "dial", "call",
-            "নোটিফিকেশন", "notify", "notification", "রিমাইন্ড", "remind",
-            "কাজ যোগ", "কাজ যুক্ত", "কাজ লেখ", "টাস্ক", "রুটিন", "তালিকা",
-            "task", "todo", "add ", "create ", "schedule",
-            "সম্পন্ন", "শেষ করে", "complete", "done", "মুছে ফেল", "ডিলিট", "delete", "remove"
+            "ডায়াল", "ফোন কর", "কল কর",
+            "নোটিফিকেশন", "notification", "রিমাইন্ডার",
+            "কাজ যোগ", "কাজ যুক্ত", "কাজ লেখ", "টাস্ক যোগ", "রুটিন যোগ",
+            "add task", "create task", "schedule task", "set alarm", "set timer",
+            "কাজ সম্পন্ন", "টাস্ক শেষ", "মুছে ফেল", "ডিলিট কর"
         )
     }
 }

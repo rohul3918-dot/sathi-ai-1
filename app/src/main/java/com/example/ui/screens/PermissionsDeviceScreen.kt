@@ -29,6 +29,7 @@ import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.Brightness6
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Checklist
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.FlashlightOn
 import androidx.compose.material.icons.rounded.History
@@ -76,6 +77,8 @@ fun PermissionsDeviceScreen(
     userPhotoUrl: String?,
     isSigningIn: Boolean,
     authErrorMessage: String?,
+    pendingTaskCount: Int = 0,
+    onOpenTasks: () -> Unit = {},
     onOpenProfile: () -> Unit,
     onGoogleSignIn: () -> Unit,
     onSignOut: () -> Unit,
@@ -91,6 +94,7 @@ fun PermissionsDeviceScreen(
     val isFlashOn by viewModel.isFlashlightOn.collectAsStateWithLifecycle()
     val volumePct by viewModel.currentVolumePercent.collectAsStateWithLifecycle()
     val brightnessPct by viewModel.appBrightnessPercent.collectAsStateWithLifecycle()
+    val activeVoiceInfo by viewModel.voiceManager.activeVoiceInfo.collectAsStateWithLifecycle()
 
     var hasMicPermission by remember {
         mutableStateOf(viewModel.deviceManager.hasOsPermission(Manifest.permission.RECORD_AUDIO))
@@ -150,10 +154,74 @@ fun PermissionsDeviceScreen(
                 )
             }
 
-            // 2. Custom AI Name, Style, Voice Persona + Test Voice
+            // 2. Daily Tasks & Routine Entry (Moved from Home Top Bar into Settings)
+            item {
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 2.dp,
+                    onClick = onOpenTasks,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(
+                            1.dp,
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.28f),
+                            RoundedCornerShape(20.dp)
+                        )
+                        .testTag("settings_open_tasks_button")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.secondaryContainer),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Checklist,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = "দৈনন্দিন কাজ ও রুটিন",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = if (pendingTaskCount > 0) {
+                                    "এখন $pendingTaskCount টি বাকি কাজ রয়েছে — দেখতে ট্যাপ করুন"
+                                } else {
+                                    "আপনার কাজের তালিকা ও রিমাইন্ডার পরিচালনা করুন"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        OutlinedButton(onClick = onOpenTasks) {
+                            Text(if (pendingTaskCount > 0) "খুলুন ($pendingTaskCount)" else "খুলুন")
+                        }
+                    }
+                }
+            }
+
+            // 3. Custom AI Name, Style, Voice Persona + Test Voice
             item {
                 AssistantPersonalizationCard(
                     permissions = perms,
+                    activeVoiceInfo = activeVoiceInfo,
                     onSave = { name, style, customPrompt, voicePersonaKey, voiceLocale ->
                         viewModel.updatePersonalization(
                             assistantName = name,

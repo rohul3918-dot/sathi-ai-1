@@ -217,6 +217,7 @@ fun AccountStatusCard(
 @Composable
 fun AssistantPersonalizationCard(
     permissions: DevicePermissions,
+    activeVoiceInfo: String = "",
     onSave: (
         name: String,
         style: String,
@@ -230,6 +231,7 @@ fun AssistantPersonalizationCard(
     modifier: Modifier = Modifier
 ) {
     val currentPersona = VoicePersona.fromKey(permissions.voicePersona, permissions.voiceGender)
+    val presetNames = remember { listOf("সাথী", "কুসুম", "নীরা", "বন্ধু") }
 
     var nameInput by remember(permissions.assistantName) {
         mutableStateOf(permissions.assistantName.ifBlank { "সাথী" })
@@ -291,13 +293,30 @@ fun AssistantPersonalizationCard(
                 value = nameInput,
                 onValueChange = { if (it.length <= 40) nameInput = it },
                 label = { Text("অ্যাসিস্ট্যান্টের নাম") },
-                placeholder = { Text("যেমন: সাথী, নীরা, জার্ভিস") },
+                placeholder = { Text("যেমন: সাথী, কুসুম, নীরা") },
                 singleLine = true,
                 shape = RoundedCornerShape(14.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("ai_name_input")
             )
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                presetNames.forEach { preset ->
+                    FilterChip(
+                        selected = nameInput.trim() == preset,
+                        onClick = {
+                            nameInput = preset
+                            onSave(preset, selectedStyle, customStyleInput, selectedPersonaKey, selectedVoiceLocale)
+                        },
+                        label = { Text(preset) },
+                        modifier = Modifier.testTag("assistant_name_preset_$preset")
+                    )
+                }
+            }
 
             Text(
                 text = "চ্যাটের ভাষা",
@@ -404,6 +423,15 @@ fun AssistantPersonalizationCard(
                             .testTag("voice_persona_${persona.key.lowercase()}")
                     )
                 }
+            }
+
+            if (activeVoiceInfo.isNotBlank()) {
+                Text(
+                    text = "সক্রিয় ভয়েস ইঞ্জিন: $activeVoiceInfo",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("active_voice_engine_info")
+                )
             }
 
             Text(

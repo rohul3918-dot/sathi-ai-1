@@ -23,6 +23,12 @@ sealed interface VoiceListeningState {
     data class Error(val message: String) : VoiceListeningState
 }
 
+internal enum class VoiceGenderHint {
+    FEMALE,
+    MALE,
+    UNKNOWN
+}
+
 class VoiceAssistantManager(private val context: Context) {
 
     private data class PendingUtterance(
@@ -33,6 +39,7 @@ class VoiceAssistantManager(private val context: Context) {
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
+    private var switchedToGoogleEngine = false
     private var pendingUtterance: PendingUtterance? = null
     private var speechRecognizer: SpeechRecognizer? = null
 
@@ -42,44 +49,94 @@ class VoiceAssistantManager(private val context: Context) {
     private val _isSpeaking = MutableStateFlow(false)
     val isSpeaking: StateFlow<Boolean> = _isSpeaking.asStateFlow()
 
+    private val _activeVoiceInfo = MutableStateFlow("")
+    val activeVoiceInfo: StateFlow<String> = _activeVoiceInfo.asStateFlow()
+
     init {
+        initTtsEngine(preferredEnginePkg = null)
+    }
+
+    private fun initTtsEngine(preferredEnginePkg: String?) {
         try {
-            tts = TextToSpeech(context.applicationContext) { status ->
-                if (status == TextToSpeech.SUCCESS) {
-                    ttsReady = true
-                    tts?.setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_ASSISTANT)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                            .build()
-                    )
-                    val bnLocale = Locale.forLanguageTag("bn-BD")
-                    val res = tts?.setLanguage(bnLocale)
-                    if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-                        tts?.setLanguage(Locale.US)
-                    }
-                    tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                        override fun onStart(utteranceId: String?) {
-                            _isSpeaking.value = true
-                        }
+            val appCtx = context.applicationContext ?: context
+            val listener = TextToSpeech.OnInitListener { status ->
+                if (status != TextToSpeech.SUCCESS) {
+                    Log.w("VoiceAssistant", "TextToSpeech init failed with status=$status")
+                    return@OnInitListener
+                }
+                val engine = tts ?: return@OnInitListener
 
-                        override fun onDone(utteranceId: String?) {
-                            _isSpeaking.value = false
-                        }
+                // If the default OEM engine lacks Bengali voices while Google TTS is installed, switch once cleanly.
+                if (preferredEnginePkg == null && !switchedToGoogleEngine && shouldSwitchToGoogleTts(engine)) {
+                    switchedToGoogleEngine = true
+                    runCatching { engine.shutdown() }
+                    ttsReady = false
+                    initTtsEngine(GOOGLE_TTS_PACKAGE)
+                    return@OnInitListener
+                }
 
-                        @Deprecated("Deprecated in Java")
-                        override fun onError(utteranceId: String?) {
-                            _isSpeaking.value = false
-                        }
-                    })
-                    pendingUtterance?.let { queued ->
-                        pendingUtterance = null
-                        speakWithPersona(queued.text, queued.persona, queued.voiceLocale)
+                ttsReady = true
+                engine.setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                val bnLocale = Locale.forLanguageTag("bn-BD")
+                val res = engine.setLanguage(bnLocale)
+                if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    val inRes = engine.setLanguage(Locale.forLanguageTag("bn-IN"))
+                    if (inRes == TextToSpeech.LANG_MISSING_DATA || inRes == TextToSpeech.LANG_NOT_SUPPORTED) {
+                        engine.setLanguage(Locale.US)
                     }
                 }
+                engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {
+                        _isSpeaking.value = true
+                    }
+
+                    override fun onDone(utteranceId: String?) {
+                        if (utteranceId?.endsWith("_last") == true || utteranceId?.startsWith("sathi_tts_single") == true) {
+                            _isSpeaking.value = false
+                        }
+                    }
+
+                    @Deprecated("Deprecated in Java")
+                    override fun onError(utteranceId: String?) {
+                        _isSpeaking.value = false
+                    }
+                })
+
+                pendingUtterance?.let { queued ->
+                    pendingUtterance = null
+                    speakWithPersona(queued.text, queued.persona, queued.voiceLocale)
+                }
+            }
+
+            tts = if (preferredEnginePkg != null) {
+                TextToSpeech(appCtx, listener, preferredEnginePkg)
+            } else {
+                TextToSpeech(appCtx, listener)
             }
         } catch (e: Exception) {
             Log.w("VoiceAssistant", "TextToSpeech init failed: ${e.message}")
+        }
+    }
+
+    private fun shouldSwitchToGoogleTts(engine: TextToSpeech): Boolean {
+        return try {
+            val defaultEngine = engine.defaultEngine.orEmpty()
+            if (defaultEngine == GOOGLE_TTS_PACKAGE) return false
+            val hasGoogleEngine = engine.engines?.any { it.name == GOOGLE_TTS_PACKAGE } == true
+            if (!hasGoogleEngine) return false
+            val voices = engine.voices.orEmpty()
+            val hasBengaliFemale = voices.any { v ->
+                v.locale.language.equals("bn", ignoreCase = true) &&
+                    classifyVoiceGender(v.name, v.features) == VoiceGenderHint.FEMALE
+            }
+            !hasBengaliFemale
+        } catch (_: Exception) {
+            false
         }
     }
 
@@ -110,14 +167,17 @@ class VoiceAssistantManager(private val context: Context) {
         persona: VoicePersona,
         voiceLocale: String = "bn-BD"
     ) {
-        val cleanForSpeech = sanitizeTextForTts(text)
-        if (cleanForSpeech.isBlank()) return
+        val segments = splitSentencesForTts(text)
+        if (segments.isEmpty()) return
+
         if (!ttsReady) {
-            pendingUtterance = PendingUtterance(cleanForSpeech, persona, voiceLocale)
+            pendingUtterance = PendingUtterance(text, persona, voiceLocale)
             return
         }
+        val engine = tts ?: return
         try {
-            val hasBengali = cleanForSpeech.any { it in '\u0980'..'\u09FF' }
+            val combined = segments.joinToString(" ")
+            val hasBengali = combined.any { it in '\u0980'..'\u09FF' }
             val preferredTag = when {
                 voiceLocale.equals("en-US", ignoreCase = true) && !hasBengali -> "en-US"
                 voiceLocale.equals("bn-IN", ignoreCase = true) -> "bn-IN"
@@ -125,24 +185,28 @@ class VoiceAssistantManager(private val context: Context) {
                 else -> voiceLocale.ifBlank { "en-US" }
             }
             val targetLocale = Locale.forLanguageTag(preferredTag)
-            val langResult = tts?.setLanguage(targetLocale)
-            if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
-                val fallbackTag = if (preferredTag == "bn-BD") "bn-IN" else "bn-BD"
-                val secondTry = tts?.setLanguage(Locale.forLanguageTag(fallbackTag))
-                if (secondTry == TextToSpeech.LANG_MISSING_DATA || secondTry == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    tts?.setLanguage(Locale.US)
-                }
-            }
-
-            applyPersonaProfile(targetLocale, persona)
+            applyPersonaProfile(engine, targetLocale, persona)
 
             _isSpeaking.value = true
-            tts?.speak(
-                cleanForSpeech,
-                TextToSpeech.QUEUE_FLUSH,
-                null,
-                "sathi_tts_${System.currentTimeMillis()}"
-            )
+            val baseId = "sathi_tts_${System.currentTimeMillis()}"
+            if (segments.size == 1) {
+                engine.speak(
+                    segments.first(),
+                    TextToSpeech.QUEUE_FLUSH,
+                    null,
+                    "sathi_tts_single_$baseId"
+                )
+            } else {
+                segments.forEachIndexed { index, segment ->
+                    val queueMode = if (index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+                    val isLast = index == segments.lastIndex
+                    val uttId = if (isLast) "${baseId}_${index}_last" else "${baseId}_$index"
+                    engine.speak(segment, queueMode, null, uttId)
+                    if (!isLast) {
+                        engine.playSilentUtterance(135L, TextToSpeech.QUEUE_ADD, "${baseId}_pause_$index")
+                    }
+                }
+            }
         } catch (e: Exception) {
             _isSpeaking.value = false
             Log.w("VoiceAssistant", "TTS speak failed: ${e.message}")
@@ -160,91 +224,61 @@ class VoiceAssistantManager(private val context: Context) {
             voiceLocale.equals("en-US", ignoreCase = true) -> {
                 "Hello, I am $assistantName, speaking with ${persona.badge}."
             }
-            else -> "হ্যালো, আমি $assistantName, এখন ${persona.shortLabel} কণ্ঠে কথা বলছি।"
+            else -> "হ্যালো আমি $assistantName এখন ${persona.shortLabel} কণ্ঠে কথা বলছি"
         }
         speakWithPersona(sample, persona, voiceLocale)
     }
 
-    private fun applyPersonaProfile(locale: Locale, persona: VoicePersona) {
-        val engine = tts ?: return
+    private fun applyPersonaProfile(
+        engine: TextToSpeech,
+        locale: Locale,
+        persona: VoicePersona
+    ) {
         val wantMale = persona.voiceGender.equals("MALE", ignoreCase = true)
-        val (matchedVoice, matchedGenderExplicitly) = findMatchingVoice(
-            engine = engine,
-            locale = locale,
+        val voices = runCatching { engine.voices?.toList().orEmpty() }.getOrDefault(emptyList())
+        val selection = selectVoiceCandidate(
+            candidates = voices.map {
+                VoiceCandidate(
+                    id = it.name,
+                    locale = it.locale,
+                    quality = it.quality,
+                    isNetworkRequired = it.isNetworkConnectionRequired,
+                    features = it.features.orEmpty()
+                )
+            },
+            preferredLocale = locale,
             wantMale = wantMale,
             variantIndex = persona.voiceVariantIndex
         )
 
+        val matchedVoice = selection?.candidate?.let { chosen ->
+            voices.firstOrNull { it.name == chosen.id }
+        }
+
         if (matchedVoice != null) {
+            // Set language to the matched voice's locale first, then lock the exact Voice object
+            runCatching { engine.setLanguage(matchedVoice.locale) }
             engine.voice = matchedVoice
-            // Gentle pitch tuning when a native gendered voice is already active keeps speech natural
-            val naturalPitch = if (matchedGenderExplicitly) {
-                when (persona) {
-                    VoicePersona.FEMALE_WARM -> 1.00f
-                    VoicePersona.FEMALE_CRISP -> 1.05f
-                    VoicePersona.MALE_CALM -> 0.96f
-                    VoicePersona.MALE_ENERGETIC -> 1.02f
+            val matchedGender = selection.genderHint
+            val pitch = computeNaturalPitch(persona, matchedGender)
+            val rate = persona.speechRate
+            engine.setPitch(pitch)
+            engine.setSpeechRate(rate)
+            _activeVoiceInfo.value = "${matchedVoice.name} ($matchedGender, pitch=$pitch)"
+            Log.d("VoiceAssistant", "Selected TTS voice: ${matchedVoice.name}, gender=$matchedGender, pitch=$pitch, rate=$rate")
+        } else {
+            val langResult = engine.setLanguage(locale)
+            if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+                val fallbackTag = if (locale.language.equals("bn", ignoreCase = true)) "bn-IN" else "en-US"
+                val secondTry = engine.setLanguage(Locale.forLanguageTag(fallbackTag))
+                if (secondTry == TextToSpeech.LANG_MISSING_DATA || secondTry == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    engine.setLanguage(Locale.US)
                 }
-            } else {
-                persona.pitch
             }
-            engine.setPitch(naturalPitch)
+            val pitch = computeNaturalPitch(persona, VoiceGenderHint.UNKNOWN)
+            engine.setPitch(pitch)
             engine.setSpeechRate(persona.speechRate)
-        } else {
-            engine.setPitch(persona.pitch)
-            engine.setSpeechRate(persona.speechRate)
-        }
-    }
-
-    private fun findMatchingVoice(
-        engine: TextToSpeech,
-        locale: Locale,
-        wantMale: Boolean,
-        variantIndex: Int
-    ): Pair<Voice?, Boolean> {
-        val voices = try {
-            engine.voices ?: return null to false
-        } catch (_: Exception) {
-            return null to false
-        }
-        val exactLocaleMatches = voices.filter {
-            it.locale.language.equals(locale.language, ignoreCase = true) &&
-                it.locale.country.equals(locale.country, ignoreCase = true) &&
-                !it.isNetworkConnectionRequired
-        }
-        val langMatches = exactLocaleMatches.ifEmpty {
-            voices.filter {
-                it.locale.language.equals(locale.language, ignoreCase = true) &&
-                    !it.isNetworkConnectionRequired
-            }
-        }.ifEmpty {
-            voices.filter { it.locale.language.equals(locale.language, ignoreCase = true) }
-        }.sortedWith(compareByDescending<Voice> { it.quality }.thenBy { it.name })
-
-        if (langMatches.isEmpty()) return null to false
-
-        val maleHints = listOf("-m-", "_m_", "male", "bgd-x-bgd", "bng-x-bng", "iom", "iol", "sfg")
-        val femaleHints = listOf("-f-", "_f_", "female", "iol-female", "tpf", "sfc")
-
-        val genderFiltered = langMatches.filter { voice ->
-            val lowerName = voice.name.lowercase(Locale.ROOT)
-            val featureMatches = voice.features?.any { feat ->
-                val lowerFeat = feat.lowercase(Locale.ROOT)
-                if (wantMale) lowerFeat.contains("male") && !lowerFeat.contains("female")
-                else lowerFeat.contains("female")
-            } == true
-            val nameMatches = if (wantMale) {
-                maleHints.any { lowerName.contains(it) } && !lowerName.contains("female")
-            } else {
-                femaleHints.any { lowerName.contains(it) }
-            }
-            featureMatches || nameMatches
-        }
-
-        return if (genderFiltered.isNotEmpty()) {
-            genderFiltered[variantIndex % genderFiltered.size] to true
-        } else {
-            langMatches[variantIndex % langMatches.size] to false
+            _activeVoiceInfo.value = "default (${locale.toLanguageTag()}, pitch=$pitch)"
         }
     }
 
@@ -366,6 +400,142 @@ class VoiceAssistantManager(private val context: Context) {
         }
         tts = null
     }
+
+    private companion object {
+        const val GOOGLE_TTS_PACKAGE = "com.google.android.tts"
+    }
+}
+
+internal data class VoiceCandidate(
+    val id: String,
+    val locale: Locale,
+    val quality: Int = 300,
+    val isNetworkRequired: Boolean = false,
+    val features: Set<String> = emptySet()
+)
+
+internal data class VoiceSelectionResult(
+    val candidate: VoiceCandidate,
+    val genderHint: VoiceGenderHint
+)
+
+internal fun classifyVoiceGender(voiceName: String, features: Set<String> = emptySet()): VoiceGenderHint {
+    val lowerFeatures = features.map { it.lowercase(Locale.ROOT) }
+    if (lowerFeatures.any { it.contains("female") }) return VoiceGenderHint.FEMALE
+    if (lowerFeatures.any { it.contains("male") && !it.contains("female") }) return VoiceGenderHint.MALE
+
+    val lower = voiceName.lowercase(Locale.ROOT)
+    val femaleTokens = listOf(
+        "female", "-f-", "_f_", "#female",
+        "-bnf-", "-bna-", "-bnx-", "-bnc-",
+        "-sfg-", "-tpf-", "-iob-", "-iog-", "-tpc-", "-fis-"
+    )
+    val maleTokens = listOf(
+        "male", "-m-", "_m_", "#male",
+        "-bnm-", "-bnd-", "-bgd-", "-bng-",
+        "-iom-", "-iol-", "-tpd-"
+    )
+
+    val matchesFemale = femaleTokens.any { lower.contains(it) } ||
+        Regex("(?:^|[-_])f\\d+(?:[-_]|$)").containsMatchIn(lower)
+    if (matchesFemale) return VoiceGenderHint.FEMALE
+
+    val matchesMale = maleTokens.any { lower.contains(it) } ||
+        Regex("(?:^|[-_])m\\d+(?:[-_]|$)").containsMatchIn(lower)
+    if (matchesMale) return VoiceGenderHint.MALE
+
+    return VoiceGenderHint.UNKNOWN
+}
+
+internal fun selectVoiceCandidate(
+    candidates: List<VoiceCandidate>,
+    preferredLocale: Locale,
+    wantMale: Boolean,
+    variantIndex: Int
+): VoiceSelectionResult? {
+    val languageMatches = candidates.filter {
+        it.locale.language.equals(preferredLocale.language, ignoreCase = true)
+    }
+    if (languageMatches.isEmpty()) return null
+
+    val desiredGender = if (wantMale) VoiceGenderHint.MALE else VoiceGenderHint.FEMALE
+    val classified = languageMatches.map { it to classifyVoiceGender(it.id, it.features) }
+
+    // Rank matching country + offline + high quality first
+    val rankedComparator = compareByDescending<Pair<VoiceCandidate, VoiceGenderHint>> { (c, _) ->
+        c.locale.country.equals(preferredLocale.country, ignoreCase = true)
+    }.thenByDescending { (c, _) ->
+        !c.isNetworkRequired
+    }.thenByDescending { (c, _) ->
+        c.quality
+    }.thenBy { (c, _) ->
+        c.id
+    }
+
+    // 1. Prefer explicit gender match across ALL dialects of this language (e.g. bn-IN female when bn-BD only has male)
+    val explicitMatches = classified
+        .filter { (_, gender) -> gender == desiredGender }
+        .sortedWith(rankedComparator)
+    if (explicitMatches.isNotEmpty()) {
+        val picked = explicitMatches[variantIndex % explicitMatches.size]
+        return VoiceSelectionResult(picked.first, picked.second)
+    }
+
+    // 2. Fallback to gender-unknown voices before opposite-gender voices
+    val unknownMatches = classified
+        .filter { (_, gender) -> gender == VoiceGenderHint.UNKNOWN }
+        .sortedWith(rankedComparator)
+    if (unknownMatches.isNotEmpty()) {
+        val picked = unknownMatches[variantIndex % unknownMatches.size]
+        return VoiceSelectionResult(picked.first, picked.second)
+    }
+
+    // 3. Last resort: use available language voices (pitch compensation will adapt gender)
+    val allSorted = classified.sortedWith(rankedComparator)
+    val picked = allSorted[variantIndex % allSorted.size]
+    return VoiceSelectionResult(picked.first, picked.second)
+}
+
+internal fun computeNaturalPitch(
+    persona: VoicePersona,
+    matchedGender: VoiceGenderHint
+): Float {
+    val wantMale = persona.voiceGender.equals("MALE", ignoreCase = true)
+    return when {
+        !wantMale && matchedGender == VoiceGenderHint.FEMALE -> {
+            if (persona == VoicePersona.FEMALE_CRISP) 1.05f else 0.99f
+        }
+        !wantMale && matchedGender == VoiceGenderHint.MALE -> {
+            // Device only has a male Bengali base voice; lift pitch clearly into female register
+            if (persona == VoicePersona.FEMALE_CRISP) 1.28f else 1.22f
+        }
+        !wantMale -> {
+            if (persona == VoicePersona.FEMALE_CRISP) 1.22f else 1.16f
+        }
+        wantMale && matchedGender == VoiceGenderHint.MALE -> {
+            if (persona == VoicePersona.MALE_ENERGETIC) 1.01f else 0.96f
+        }
+        wantMale && matchedGender == VoiceGenderHint.FEMALE -> {
+            // Device only has a female base voice; lower pitch cleanly into male register
+            if (persona == VoicePersona.MALE_ENERGETIC) 0.86f else 0.80f
+        }
+        else -> {
+            if (persona == VoicePersona.MALE_ENERGETIC) 0.90f else 0.84f
+        }
+    }
+}
+
+internal fun splitSentencesForTts(raw: String): List<String> {
+    if (raw.isBlank()) return emptyList()
+    // Preserve link labels and strip URLs before sentence segmentation so URLs don't split weirdly
+    val withoutLinks = raw
+        .replace(Regex("\\[([^\\]]+)]\\([^)]*\\)"), " $1 ")
+        .replace(Regex("(?:https?://|ftp://|mailto:|www\\.)\\S+", RegexOption.IGNORE_CASE), " ")
+
+    return withoutLinks
+        .split(Regex("[\\r\\n।!?;:]+|(?<!\\d)\\.(?!\\d)"))
+        .map { sanitizeTextForTts(it) }
+        .filter { it.isNotBlank() }
 }
 
 internal fun sanitizeTextForTts(raw: String): String {
@@ -377,7 +547,7 @@ internal fun sanitizeTextForTts(raw: String): String {
     // 2. Strip bare URLs and email/web links
     text = text.replace(Regex("(?:https?://|ftp://|mailto:|www\\.)\\S+", RegexOption.IGNORE_CASE), " ")
 
-    // 3. Strip fenced code block headers/markers
+    // 3. Strip fenced code block markers
     text = text.replace(Regex("```[a-zA-Z0-9_+.-]*"), " ")
 
     // 4. Filter out emojis, surrogates, variation selectors, ZWJ, and non-text symbols
@@ -398,25 +568,14 @@ internal fun sanitizeTextForTts(raw: String): String {
     }
     text = filtered.toString()
 
-    // 5. Convert line breaks and clause-ending punctuation into subtle speech pauses (comma)
+    // 5. Strip ALL markdown symbols, brackets, quotes, and punctuation symbols so none are ever spoken aloud
     text = text
-        .replace(Regex("[\\r\\n]+"), ", ")
-        .replace(Regex("[!?;:।]+"), ", ")
-        .replace(Regex("(?<!\\d)\\.(?!\\d)"), ", ")
+        .replace(Regex("(?<!\\d)\\.(?!\\d)"), " ")
+        .replace(
+            Regex("[*#_`~()\\[\\]{}<>【】「」«»„\"'“”‘’/\\\\|@\$%^&+=\\-–—•·…¡¿,!?;:।\\r\\n]"),
+            " "
+        )
 
-    // 6. Strip all markdown symbols, brackets, quotes, dashes, slashes, and remaining punctuation symbols
-    text = text.replace(
-        Regex("[*#_`~()\\[\\]{}<>【】「」«»„\"'“”‘’/\\\\|@\$%^&+=\\-–—•·…¡¿]"),
-        " "
-    )
-
-    // 7. Collapse whitespace and repeated/dangling commas cleanly
-    text = text
-        .replace(Regex("\\s*,\\s*"), ", ")
-        .replace(Regex("(?:,\\s*){2,}"), ", ")
-        .replace(Regex("\\s+"), " ")
-        .trim(' ', ',', '\t')
-
-    return text
+    // 6. Collapse extra spaces cleanly
+    return text.replace(Regex("\\s+"), " ").trim()
 }
-

@@ -79,6 +79,7 @@ class SathiPersonalityTest {
         val engine = SathiAiEngine(context)
 
         assertFalse(engine.isLikelyActionOrDeviceIntent("কেমন আছো আজকে?"))
+        assertFalse(engine.isLikelyActionOrDeviceIntent("চলুন এটা নিয়ে আলোচনা করি"))
         assertFalse(engine.isLikelyActionOrDeviceIntent("Tell me a motivational quote"))
         assertTrue(engine.isLikelyActionOrDeviceIntent("টর্চ লাইট অন করো"))
         assertTrue(engine.isLikelyActionOrDeviceIntent("ভলিউম ৬০ শতাংশ করো"))
