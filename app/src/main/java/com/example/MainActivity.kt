@@ -1,10 +1,14 @@
 package com.example
 
+import android.Manifest
+import android.app.Activity
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeOut
@@ -62,6 +66,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.ai.SathiAiEngine
 import com.example.core.attemptAutoSignIn
 import com.example.core.configureAppCheck
@@ -73,12 +80,14 @@ import com.example.core.safeCurrentUser
 import com.example.core.signOutUser
 import com.example.data.model.UserProfile
 import com.example.data.repository.AuthSessionStore
+import com.example.data.repository.CompanionConfigStore
 import com.example.data.repository.LocalFallbackSathiDataStore
 import com.example.data.repository.LocalProfileCache
 import com.example.data.repository.SathiDataStore
 import com.example.data.repository.SathiRepository
 import com.example.device.DeviceControlManager
 import com.example.device.VoiceAssistantManager
+import com.example.overlay.FloatingCompanionService
 import com.example.ui.DataUiState
 import com.example.ui.SathiViewModel
 import com.example.ui.components.SathiSplashScreen
@@ -99,22 +108,41 @@ private enum class SathiRoute {
 }
 
 class MainActivity : ComponentActivity() {
+    private var voiceTriggerNonce by mutableStateOf(0)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Configure App Check with launch intent before any UI, ViewModels, or Firebase operations
         configureAppCheck(this, intent)
+        if (intent?.getBooleanExtra(FloatingCompanionService.EXTRA_START_VOICE_ON_OPEN, false) == true) {
+            voiceTriggerNonce++
+        }
 
         enableEdgeToEdge()
         setContent {
             SathiAiTheme {
-                AppNavigation()
+                AppNavigation(
+                    voiceTriggerNonce = voiceTriggerNonce,
+                    onVoiceTriggerHandled = { voiceTriggerNonce = 0 }
+                )
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(FloatingCompanionService.EXTRA_START_VOICE_ON_OPEN, false)) {
+            voiceTriggerNonce++
         }
     }
 }
 
 @Composable
-fun AppNavigation() {
+fun AppNavigation(
+    voiceTriggerNonce: Int = 0,
+    onVoiceTriggerHandled: () -> Unit = {}
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val firebaseReady = isFirebaseReady(context)
@@ -194,7 +222,9 @@ fun AppNavigation() {
                 userPhotoUrl = resolvedPhotoUrl,
                 firebaseReady = firebaseReady,
                 currentRoute = currentRoute,
-                onRouteChange = { currentRoute = it }
+                onRouteChange = { currentRoute = it },
+                voiceTriggerNonce = voiceTriggerNonce,
+                onVoiceTriggerHandled = onVoiceTriggerHandled
             )
         }
 
@@ -219,7 +249,9 @@ private fun SathiHomeShell(
     userPhotoUrl: String?,
     firebaseReady: Boolean,
     currentRoute: SathiRoute,
-    onRouteChange: (SathiRoute) -> Unit
+    onRouteChange: (SathiRoute) -> Unit,
+    voiceTriggerNonce: Int,
+    onVoiceTriggerHandled: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -259,7 +291,8 @@ private fun SathiHomeShell(
                     deviceManager = DeviceControlManager(app),
                     voiceManager = VoiceAssistantManager(app),
                     currentUserId = currentUserId,
-                    initialUserProfile = seededProfile
+                    initialUserProfile = seededProfile,
+                    companionConfigStore = CompanionConfigStore(app)
                 )
             }
         }
@@ -269,10 +302,45 @@ private fun SathiHomeShell(
     var authErrorMessage by remember { mutableStateOf<String?>(null) }
     var tasksOpenedFromSettings by rememberSaveable { mutableStateOf(false) }
 
+    val activity = context as? Activity
+    val lifecycleOwner = LocalLifecycleOwner.current
     val tasksState by viewModel.tasksState.collectAsStateWithLifecycle()
     val userProfile by viewModel.userProfileState.collectAsStateWithLifecycle()
+    val companionPrefs by viewModel.companionPrefsState.collectAsStateWithLifecycle()
     val statusBanner by viewModel.statusBanner.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(voiceTriggerNonce) {
+        if (voiceTriggerNonce > 0) {
+            onRouteChange(SathiRoute.CHAT)
+            if (viewModel.deviceManager.hasOsPermission(Manifest.permission.RECORD_AUDIO)) {
+                viewModel.startVoiceInput(activity)
+            }
+            onVoiceTriggerHandled()
+        }
+    }
+
+    DisposableEffect(lifecycleOwner, companionPrefs, activity, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> {
+                    FloatingCompanionService.stopOverlay(context)
+                }
+                Lifecycle.Event.ON_STOP -> {
+                    if (activity?.isChangingConfigurations != true &&
+                        companionPrefs.floatingOverlayEnabled &&
+                        companionPrefs.selectedSlot in 1..5 &&
+                        FloatingCompanionService.canShowOverlay(context)
+                    ) {
+                        FloatingCompanionService.startOverlay(context, companionPrefs.selectedSlot)
+                    }
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     val pendingTaskCount = (tasksState as? DataUiState.Success)?.data?.count { !it.completed } ?: 0
 

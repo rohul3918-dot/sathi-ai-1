@@ -8,12 +8,14 @@ import androidx.lifecycle.viewModelScope
 import com.example.ai.AiAssistantDirective
 import com.example.ai.SathiAiEngine
 import com.example.data.model.ChatMessageRecord
+import com.example.data.model.CompanionPreferences
 import com.example.data.model.ConversationStyle
 import com.example.data.model.DailyTask
 import com.example.data.model.DeviceActionLog
 import com.example.data.model.DevicePermissions
 import com.example.data.model.UserProfile
 import com.example.data.model.VoicePersona
+import com.example.data.repository.CompanionConfigStore
 import com.example.data.repository.SathiDataStore
 import com.example.device.DeviceActionOutcome
 import com.example.device.DeviceControlManager
@@ -58,7 +60,8 @@ class SathiViewModel(
     val deviceManager: DeviceControlManager,
     val voiceManager: VoiceAssistantManager,
     private val currentUserId: String,
-    initialUserProfile: UserProfile = UserProfile(userId = currentUserId)
+    initialUserProfile: UserProfile = UserProfile(userId = currentUserId),
+    private val companionConfigStore: CompanionConfigStore? = null
 ) : ViewModel() {
 
     val tasksState: StateFlow<DataUiState<List<DailyTask>>> =
@@ -120,6 +123,9 @@ class SathiViewModel(
             )
 
     val listeningState: StateFlow<VoiceListeningState> = voiceManager.listeningState
+    val isSpeakingState: StateFlow<Boolean> = voiceManager.isSpeaking
+    val companionPrefsState: StateFlow<CompanionPreferences> =
+        companionConfigStore?.state ?: MutableStateFlow(CompanionPreferences(selectedSlot = 0)).asStateFlow()
     val isFlashlightOn: StateFlow<Boolean> = deviceManager.isFlashlightOn
     val currentVolumePercent: StateFlow<Int> = deviceManager.currentVolumePercent
     val appBrightnessPercent: StateFlow<Int> = deviceManager.appBrightnessPercent
@@ -562,6 +568,24 @@ class SathiViewModel(
         val persona = VoicePersona.fromKey(voicePersonaKey, perms.voiceGender)
         val aiName = perms.assistantName.ifBlank { "সাথী" }
         voiceManager.testVoice(persona.key, persona.voiceGender, aiName, voiceLocale)
+    }
+
+    fun selectCompanionSlot(slot: Int) {
+        companionConfigStore?.selectSlot(slot)
+        _statusBanner.value = if (slot == 0) {
+            "সঙ্গী চরিত্র বন্ধ করা হয়েছে"
+        } else {
+            "character_$slot নির্বাচিত হয়েছে ✨"
+        }
+    }
+
+    fun setFloatingOverlayEnabled(enabled: Boolean) {
+        companionConfigStore?.setFloatingOverlayEnabled(enabled)
+        _statusBanner.value = if (enabled) {
+            "অ্যাপের বাইরে ভাসমান চরিত্র মোড চালু হয়েছে ✨"
+        } else {
+            "ভাসমান চরিত্র মোড বন্ধ করা হয়েছে"
+        }
     }
 
     fun addOrUpdateTask(

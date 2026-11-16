@@ -66,6 +66,7 @@ import com.example.data.model.DeviceActionLog
 import com.example.ui.SathiViewModel
 import com.example.ui.components.AccountStatusCard
 import com.example.ui.components.AssistantPersonalizationCard
+import com.example.ui.components.CompanionCharacterSettingsCard
 import com.example.ui.theme.EmeraldSuccess
 
 @Composable
@@ -95,6 +96,7 @@ fun PermissionsDeviceScreen(
     val volumePct by viewModel.currentVolumePercent.collectAsStateWithLifecycle()
     val brightnessPct by viewModel.appBrightnessPercent.collectAsStateWithLifecycle()
     val activeVoiceInfo by viewModel.voiceManager.activeVoiceInfo.collectAsStateWithLifecycle()
+    val companionPrefs by viewModel.companionPrefsState.collectAsStateWithLifecycle()
 
     var hasMicPermission by remember {
         mutableStateOf(viewModel.deviceManager.hasOsPermission(Manifest.permission.RECORD_AUDIO))
@@ -243,7 +245,18 @@ fun PermissionsDeviceScreen(
                 )
             }
 
-            // 3. Chat Management
+            // 4. Live Animated Companion Character (5 user-supplied slots + Floating Overlay Mode)
+            item {
+                CompanionCharacterSettingsCard(
+                    preferences = companionPrefs,
+                    onSelectSlot = { slot -> viewModel.selectCompanionSlot(slot) },
+                    onToggleFloatingOverlay = { enabled ->
+                        viewModel.setFloatingOverlayEnabled(enabled)
+                    }
+                )
+            }
+
+            // 5. Chat Management
             item {
                 Surface(
                     shape = RoundedCornerShape(18.dp),

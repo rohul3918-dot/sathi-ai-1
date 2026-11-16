@@ -1,0 +1,404 @@
+package com.example.overlay
+
+import android.animation.AnimatorSet
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.graphics.drawable.GradientDrawable
+import android.os.Build
+import android.os.IBinder
+import android.provider.Settings
+import android.util.Log
+import android.util.TypedValue
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
+import android.view.WindowManager
+import android.view.animation.AccelerateDecelerateInterpolator
+import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import com.example.MainActivity
+import com.example.R
+import com.example.data.model.CompanionCharacterCatalog
+import com.example.data.repository.CompanionConfigStore
+import kotlin.math.abs
+
+class FloatingCompanionService : Service() {
+
+    private var windowManager: WindowManager? = null
+    private var overlayRoot: View? = null
+    private var layoutParams: WindowManager.LayoutParams? = null
+    private var characterImageView: ImageView? = null
+    private var breathAnimator: AnimatorSet? = null
+    private var isDockedAside = false
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        windowManager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+        ensureNotificationChannel()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP_OVERLAY) {
+            stopSelfSafely()
+            return START_NOT_STICKY
+        }
+
+        val store = CompanionConfigStore(this)
+        val slot = intent?.getIntExtra(EXTRA_CHARACTER_SLOT, store.current().selectedSlot)
+            ?: store.current().selectedSlot
+        val drawableId = CompanionCharacterCatalog.resolveDrawableId(this, slot)
+
+        if (!canShowOverlay(this) || drawableId == 0) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        val notification = buildForegroundNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+
+        showOrUpdateOverlay(drawableId)
+        return START_STICKY
+    }
+
+    private fun showOrUpdateOverlay(drawableId: Int) {
+        val wm = windowManager ?: return
+        val existingImage = characterImageView
+        if (overlayRoot != null && existingImage != null) {
+            existingImage.setImageResource(drawableId)
+            return
+        }
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(4), dp(2), dp(4), dp(4))
+        }
+
+        val charSize = dp(82)
+        val characterFrame = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(charSize, dp(96))
+        }
+
+        val imageView = ImageView(this).apply {
+            setImageResource(drawableId)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            contentDescription = "Sathi AI Companion"
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+        characterImageView = imageView
+
+        val closeBadge = TextView(this).apply {
+            text = "✕"
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.argb(190, 15, 25, 45))
+                setStroke(dp(1), Color.argb(120, 46, 230, 214))
+            }
+            layoutParams = FrameLayout.LayoutParams(dp(22), dp(22)).apply {
+                gravity = Gravity.TOP or Gravity.END
+            }
+            setOnClickListener {
+                stopSelfSafely()
+            }
+        }
+
+        characterFrame.addView(imageView)
+        characterFrame.addView(closeBadge)
+
+        val pillHint = TextView(this).apply {
+            text = "কথা বলুন"
+            setTextColor(Color.parseColor("#E8F6FF"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+            setPadding(dp(8), dp(2), dp(8), dp(2))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(12).toFloat()
+                setColor(Color.argb(210, 10, 18, 34))
+                setStroke(dp(1), Color.argb(140, 46, 230, 214))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = dp(2)
+            }
+        }
+
+        container.addView(characterFrame)
+        container.addView(pillHint)
+
+        val typeFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        } else {
+            @Suppress("DEPRECATION")
+            WindowManager.LayoutParams.TYPE_PHONE
+        }
+
+        val screenWidth = resources.displayMetrics.widthPixels
+        val statusBarOffset = resolveStatusBarOffsetPx()
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            typeFlag,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = (screenWidth - dp(96)).coerceAtLeast(0)
+            y = statusBarOffset
+        }
+
+        var initialX = 0
+        var initialY = 0
+        var initialTouchX = 0f
+        var initialTouchY = 0f
+        var moved = false
+
+        container.setOnTouchListener { v, event ->
+            val currentParams = layoutParams ?: return@setOnTouchListener false
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    initialX = currentParams.x
+                    initialY = currentParams.y
+                    initialTouchX = event.rawX
+                    initialTouchY = event.rawY
+                    moved = false
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = (event.rawX - initialTouchX).toInt()
+                    val dy = (event.rawY - initialTouchY).toInt()
+                    if (abs(dx) > dp(6) || abs(dy) > dp(6)) {
+                        moved = true
+                    }
+                    if (moved) {
+                        currentParams.x = (initialX + dx).coerceIn(-dp(34), screenWidth - dp(44))
+                        currentParams.y = (initialY + dy).coerceIn(dp(8), resources.displayMetrics.heightPixels - dp(120))
+                        runCatching { wm.updateViewLayout(v, currentParams) }
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (!moved) {
+                        if (isDockedAside) {
+                            // Un-dock cleanly first on tap if tucked aside, otherwise open talk in Sathi AI
+                            isDockedAside = false
+                            currentParams.x = (screenWidth - dp(96)).coerceAtLeast(0)
+                            v.alpha = 1f
+                            runCatching { wm.updateViewLayout(v, currentParams) }
+                        } else {
+                            openMainTalkScreen()
+                        }
+                    } else {
+                        // Snap aside if dragged very close to left/right edge, otherwise dock cleanly near status bar/edge
+                        val mid = currentParams.x + v.width / 2
+                        if (currentParams.x < -dp(10) || currentParams.x > screenWidth - dp(68)) {
+                            isDockedAside = true
+                            currentParams.x = if (mid < screenWidth / 2) -dp(32) else screenWidth - dp(54)
+                            v.alpha = 0.72f
+                        } else {
+                            isDockedAside = false
+                            currentParams.x = if (mid < screenWidth / 2) dp(8) else (screenWidth - dp(96)).coerceAtLeast(0)
+                            v.alpha = 1f
+                        }
+                        runCatching { wm.updateViewLayout(v, currentParams) }
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+
+        layoutParams = params
+        overlayRoot = container
+        try {
+            wm.addView(container, params)
+            startSubtleIdleAnimation(imageView)
+        } catch (e: Exception) {
+            Log.w(TAG, "Unable to attach floating overlay: ${e.message}")
+            stopSelfSafely()
+        }
+    }
+
+    private fun startSubtleIdleAnimation(target: View) {
+        breathAnimator?.cancel()
+        val floatY = ObjectAnimator.ofFloat(target, View.TRANSLATION_Y, -dp(3).toFloat(), dp(4).toFloat()).apply {
+            duration = 1900L
+            repeatCount = ValueAnimator.INFINITE
+            repeatMode = ValueAnimator.REVERSE
+            interpolator = AccelerateDecelerateInterpolator()
+        }
+        val scaleX = ObjectAnimator.ofFloat(target, View.SCALE_X, 0.98f, 1.03f).apply {
+            duration = 1900L
+            repeatCount = ValueAnimator.INFINITE
+            repeatMode = ValueAnimator.REVERSE
+        }
+        val scaleY = ObjectAnimator.ofFloat(target, View.SCALE_Y, 0.98f, 1.03f).apply {
+            duration = 1900L
+            repeatCount = ValueAnimator.INFINITE
+            repeatMode = ValueAnimator.REVERSE
+        }
+        breathAnimator = AnimatorSet().apply {
+            playTogether(floatY, scaleX, scaleY)
+            start()
+        }
+    }
+
+    private fun openMainTalkScreen() {
+        val launchIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(EXTRA_START_VOICE_ON_OPEN, true)
+        }
+        runCatching { startActivity(launchIntent) }
+    }
+
+    private fun stopSelfSafely() {
+        removeOverlayView()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    private fun removeOverlayView() {
+        breathAnimator?.cancel()
+        breathAnimator = null
+        val root = overlayRoot ?: return
+        runCatching { windowManager?.removeViewImmediate(root) }
+        overlayRoot = null
+        characterImageView = null
+        layoutParams = null
+    }
+
+    override fun onDestroy() {
+        removeOverlayView()
+        super.onDestroy()
+    }
+
+    private fun ensureNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = getSystemService(NotificationManager::class.java) ?: return
+            val existing = nm.getNotificationChannel(CHANNEL_ID)
+            if (existing == null) {
+                nm.createNotificationChannel(
+                    NotificationChannel(
+                        CHANNEL_ID,
+                        "সাথী ভাসমান চরিত্র",
+                        NotificationManager.IMPORTANCE_LOW
+                    ).apply {
+                        description = "অ্যাপের বাইরে ভাসমান সাথী চরিত্র চালু রাখতে ব্যবহৃত হয়।"
+                        setShowBadge(false)
+                    }
+                )
+            }
+        }
+    }
+
+    private fun buildForegroundNotification(): Notification {
+        val openIntent = PendingIntent.getActivity(
+            this,
+            101,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra(EXTRA_START_VOICE_ON_OPEN, true)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val stopIntent = PendingIntent.getService(
+            this,
+            102,
+            Intent(this, FloatingCompanionService::class.java).apply {
+                action = ACTION_STOP_OVERLAY
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher_round)
+            .setContentTitle("সাথী ভাসমান সঙ্গী সক্রিয়")
+            .setContentText("কথা বলতে চরিত্রে ট্যাপ করুন অথবা এখান থেকে বন্ধ করুন")
+            .setContentIntent(openIntent)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .addAction(0, "বন্ধ করুন", stopIntent)
+            .build()
+    }
+
+    private fun resolveStatusBarOffsetPx(): Int {
+        val resId = resources.getIdentifier("status_bar_height", "dimen", "android")
+        val statusHeight = if (resId > 0) resources.getDimensionPixelSize(resId) else dp(28)
+        return (statusHeight * 0.45f).toInt().coerceAtLeast(dp(12))
+    }
+
+    private fun dp(value: Int): Int {
+        return TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_DIP,
+            value.toFloat(),
+            resources.displayMetrics
+        ).toInt()
+    }
+
+    companion object {
+        private const val TAG = "FloatingCompanion"
+        private const val CHANNEL_ID = "sathi_floating_companion_channel"
+        private const val NOTIFICATION_ID = 7701
+        const val ACTION_START_OR_UPDATE = "com.example.action.START_FLOATING_COMPANION"
+        const val ACTION_STOP_OVERLAY = "com.example.action.STOP_FLOATING_COMPANION"
+        const val EXTRA_CHARACTER_SLOT = "extra_character_slot"
+        const val EXTRA_START_VOICE_ON_OPEN = "extra_start_voice_on_open"
+
+        fun canShowOverlay(context: Context): Boolean {
+            return Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(context)
+        }
+
+        fun startOverlay(context: Context, slot: Int) {
+            if (!canShowOverlay(context)) return
+            if (CompanionCharacterCatalog.resolveDrawableId(context, slot) == 0) return
+            val intent = Intent(context, FloatingCompanionService::class.java).apply {
+                action = ACTION_START_OR_UPDATE
+                putExtra(EXTRA_CHARACTER_SLOT, slot)
+            }
+            runCatching {
+                ContextCompat.startForegroundService(context, intent)
+            }.onFailure {
+                Log.w(TAG, "Failed to start FloatingCompanionService: ${it.message}")
+            }
+        }
+
+        fun stopOverlay(context: Context) {
+            runCatching {
+                context.stopService(Intent(context, FloatingCompanionService::class.java))
+            }
+        }
+    }
+}

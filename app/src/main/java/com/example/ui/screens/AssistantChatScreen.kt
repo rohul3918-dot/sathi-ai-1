@@ -12,6 +12,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -68,6 +69,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -88,7 +91,10 @@ import com.example.device.VoiceListeningState
 import com.example.ui.ChatTurnError
 import com.example.ui.PendingPermissionPrompt
 import com.example.ui.SathiViewModel
+import com.example.ui.components.CompanionMotionState
+import com.example.ui.components.LiveCompanionCharacter
 import com.example.ui.theme.EmeraldSuccess
+import kotlinx.coroutines.delay
 
 @Composable
 fun AssistantChatScreen(
@@ -105,15 +111,26 @@ fun AssistantChatScreen(
     val isThinking by viewModel.isAiThinking.collectAsStateWithLifecycle()
     val streamingReply by viewModel.streamingReplyText.collectAsStateWithLifecycle()
     val listeningState by viewModel.listeningState.collectAsStateWithLifecycle()
+    val isSpeaking by viewModel.isSpeakingState.collectAsStateWithLifecycle()
+    val companionPrefs by viewModel.companionPrefsState.collectAsStateWithLifecycle()
     val turnError by viewModel.chatTurnError.collectAsStateWithLifecycle()
     val pendingPrompt by viewModel.pendingPermissionPrompt.collectAsStateWithLifecycle()
 
     var inputText by remember { mutableStateOf("") }
+    var isPointerDown by remember { mutableStateOf(false) }
+    var isScreenInteracting by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     val aiName = permissions.assistantName.ifBlank { "সাথী" }
     val activePersona = VoicePersona.fromKey(permissions.voicePersona, permissions.voiceGender)
     val styleLabel = ConversationStyle.fromKey(permissions.conversationStyle).bnLabel
+
+    val companionMotionState = when {
+        listeningState is VoiceListeningState.Listening -> CompanionMotionState.LISTENING
+        isSpeaking -> CompanionMotionState.SPEAKING
+        isThinking -> CompanionMotionState.THINKING
+        else -> CompanionMotionState.IDLE
+    }
 
     val micPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -127,6 +144,15 @@ fun AssistantChatScreen(
         contract = ActivityResultContracts.RequestPermission()
     ) { _ ->
         viewModel.dismissPermissionPrompt()
+    }
+
+    LaunchedEffect(isPointerDown, listState.isScrollInProgress) {
+        if (isPointerDown || listState.isScrollInProgress) {
+            isScreenInteracting = true
+        } else if (isScreenInteracting) {
+            delay(900L)
+            isScreenInteracting = false
+        }
     }
 
     LaunchedEffect(messages.size, isThinking, turnError) {
@@ -145,12 +171,25 @@ fun AssistantChatScreen(
         }
     }
 
-    Column(
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
-            .imePadding(),
-        horizontalAlignment = Alignment.CenterHorizontally
+            .imePadding()
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        isPointerDown = event.changes.any { it.pressed }
+                    }
+                }
+            }
     ) {
+        val containerHeight = maxHeight
+
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
         // Voice active listening / error indicator
         AnimatedVisibility(visible = listeningState !is VoiceListeningState.Idle) {
             val (bannerText, isErr) = when (val st = listeningState) {
@@ -227,7 +266,7 @@ fun AssistantChatScreen(
                 .weight(1f)
                 .fillMaxWidth()
                 .widthIn(max = 760.dp),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             if (messages.isEmpty() && streamingReply.isNullOrBlank()) {
@@ -416,6 +455,29 @@ fun AssistantChatScreen(
                     )
                 }
             }
+        }
+        }
+
+        if (companionPrefs.selectedSlot in 1..5) {
+            LiveCompanionCharacter(
+                selectedSlot = companionPrefs.selectedSlot,
+                motionState = companionMotionState,
+                isScreenInteracting = isScreenInteracting,
+                maxContainerHeight = containerHeight,
+                assistantName = aiName,
+                onTapCompanion = {
+                    when {
+                        isSpeaking -> viewModel.voiceManager.stopSpeaking()
+                        listeningState is VoiceListeningState.Listening -> viewModel.voiceManager.stopListening()
+                        viewModel.deviceManager.hasOsPermission(Manifest.permission.RECORD_AUDIO) ->
+                            viewModel.startVoiceInput(activity)
+                        else -> micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 10.dp, bottom = 86.dp)
+            )
         }
     }
 }
