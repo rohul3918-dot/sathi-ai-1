@@ -317,6 +317,10 @@ class VoiceAssistantManager(private val context: Context) {
                 override fun onEndOfSpeech() {}
 
                 override fun onError(error: Int) {
+                    runCatching { recognizer.destroy() }
+                    if (speechRecognizer === recognizer) {
+                        speechRecognizer = null
+                    }
                     val msg = when (error) {
                         SpeechRecognizer.ERROR_NO_MATCH -> "কিছু শোনা যায়নি, আবার চেষ্টা করুন।"
                         SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "সময় শেষ হয়েছে, মাইকে ট্যাপ করে বলুন।"

@@ -28,7 +28,7 @@ class CompanionConfigStore(context: Context) {
         } else {
             defaultSlot
         }
-        val overlayEnabled = prefs.getBoolean(KEY_FLOATING_OVERLAY_ENABLED, false)
+        val overlayEnabled = prefs.getBoolean(KEY_FLOATING_OVERLAY_ENABLED, true)
         return CompanionPreferences(
             selectedSlot = validSlot,
             floatingOverlayEnabled = overlayEnabled

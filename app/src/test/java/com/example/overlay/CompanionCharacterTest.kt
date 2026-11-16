@@ -31,19 +31,21 @@ class CompanionCharacterTest {
     }
 
     @Test
-    fun companionConfigStore_persistsCharacterSlotSelectionOffAndOverlayToggle() {
+    fun companionConfigStore_defaultsAndPersistsCharacterSlotSelectionOffAndOverlayToggle() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val store = CompanionConfigStore(context)
+        val initialStore = CompanionConfigStore(context)
+        assertEquals(1, initialStore.current().selectedSlot)
+        assertTrue(initialStore.current().floatingOverlayEnabled)
 
-        store.selectSlot(4)
-        store.setFloatingOverlayEnabled(true)
+        initialStore.selectSlot(4)
+        initialStore.setFloatingOverlayEnabled(true)
 
         val reloaded = CompanionConfigStore(context).current()
         assertEquals(4, reloaded.selectedSlot)
         assertTrue(reloaded.floatingOverlayEnabled)
 
-        store.selectSlot(0)
-        store.setFloatingOverlayEnabled(false)
+        initialStore.selectSlot(0)
+        initialStore.setFloatingOverlayEnabled(false)
         val turnedOff = CompanionConfigStore(context).current()
         assertEquals(0, turnedOff.selectedSlot)
         assertFalse(turnedOff.floatingOverlayEnabled)

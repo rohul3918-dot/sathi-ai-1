@@ -6,6 +6,12 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -19,8 +25,10 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -39,6 +47,7 @@ import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Refresh
@@ -61,12 +70,15 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -74,6 +86,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
@@ -95,6 +110,7 @@ import com.example.ui.components.CompanionMotionState
 import com.example.ui.components.LiveCompanionCharacter
 import com.example.ui.theme.EmeraldSuccess
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun AssistantChatScreen(
@@ -105,6 +121,10 @@ fun AssistantChatScreen(
     val context = LocalContext.current
     val activity = context as? Activity
     val clipboard = LocalClipboardManager.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val density = LocalDensity.current
+    val coroutineScope = rememberCoroutineScope()
 
     val messages by viewModel.messagesState.collectAsStateWithLifecycle()
     val permissions by viewModel.permissionsState.collectAsStateWithLifecycle()
@@ -112,18 +132,23 @@ fun AssistantChatScreen(
     val streamingReply by viewModel.streamingReplyText.collectAsStateWithLifecycle()
     val listeningState by viewModel.listeningState.collectAsStateWithLifecycle()
     val isSpeaking by viewModel.isSpeakingState.collectAsStateWithLifecycle()
+    val isLiveVoiceActive by viewModel.isLiveVoiceActive.collectAsStateWithLifecycle()
     val companionPrefs by viewModel.companionPrefsState.collectAsStateWithLifecycle()
     val turnError by viewModel.chatTurnError.collectAsStateWithLifecycle()
     val pendingPrompt by viewModel.pendingPermissionPrompt.collectAsStateWithLifecycle()
 
     var inputText by remember { mutableStateOf("") }
     var isPointerDown by remember { mutableStateOf(false) }
+    var touchInteractionSeq by remember { mutableLongStateOf(0L) }
     var isScreenInteracting by remember { mutableStateOf(false) }
+    var pendingLiveVoiceAfterPerm by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     val aiName = permissions.assistantName.ifBlank { "সাথী" }
     val activePersona = VoicePersona.fromKey(permissions.voicePersona, permissions.voiceGender)
     val styleLabel = ConversationStyle.fromKey(permissions.conversationStyle).bnLabel
+    val showCompanion = isLiveVoiceActive && companionPrefs.selectedSlot in 1..5
+    val imeBottomPx = WindowInsets.ime.getBottom(density)
 
     val companionMotionState = when {
         listeningState is VoiceListeningState.Listening -> CompanionMotionState.LISTENING
@@ -135,8 +160,14 @@ fun AssistantChatScreen(
     val micPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
+        val startLive = pendingLiveVoiceAfterPerm
+        pendingLiveVoiceAfterPerm = false
         if (granted) {
-            viewModel.startVoiceInput(activity)
+            if (startLive) {
+                viewModel.startLiveVoice(activity)
+            } else {
+                viewModel.startVoiceInput(activity)
+            }
         }
     }
 
@@ -146,16 +177,17 @@ fun AssistantChatScreen(
         viewModel.dismissPermissionPrompt()
     }
 
-    LaunchedEffect(isPointerDown, listState.isScrollInProgress) {
+    // Touch-responsive 3.5s idle timer: any touch or scroll restarts the countdown
+    LaunchedEffect(isPointerDown, listState.isScrollInProgress, touchInteractionSeq) {
         if (isPointerDown || listState.isScrollInProgress) {
             isScreenInteracting = true
         } else if (isScreenInteracting) {
-            delay(900L)
+            delay(3500L)
             isScreenInteracting = false
         }
     }
 
-    LaunchedEffect(messages.size, isThinking, turnError) {
+    LaunchedEffect(messages.size, isThinking, turnError, imeBottomPx) {
         val totalItems = messages.size + (if (isThinking || !streamingReply.isNullOrBlank()) 1 else 0) + (if (turnError != null) 1 else 0)
         if (totalItems > 0) {
             listState.animateScrollToItem((totalItems - 1).coerceAtLeast(0))
@@ -171,6 +203,22 @@ fun AssistantChatScreen(
         }
     }
 
+    val submitTypedMessage: () -> Unit = {
+        val toSend = inputText
+        if (toSend.isNotBlank() && !isThinking) {
+            inputText = ""
+            focusManager.clearFocus(force = true)
+            keyboardController?.hide()
+            viewModel.sendUserMessage(toSend, activity)
+            coroutineScope.launch {
+                val totalItems = messages.size + 1
+                if (totalItems > 0) {
+                    listState.animateScrollToItem((totalItems - 1).coerceAtLeast(0))
+                }
+            }
+        }
+    }
+
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
@@ -180,6 +228,7 @@ fun AssistantChatScreen(
                     while (true) {
                         val event = awaitPointerEvent(PointerEventPass.Initial)
                         isPointerDown = event.changes.any { it.pressed }
+                        touchInteractionSeq++
                     }
                 }
             }
@@ -190,8 +239,60 @@ fun AssistantChatScreen(
             modifier = Modifier.fillMaxSize(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-        // Voice active listening / error indicator
-        AnimatedVisibility(visible = listeningState !is VoiceListeningState.Idle) {
+        // Inline active Live Voice indicator bar right inside main chat (no separate page/modal)
+        AnimatedVisibility(visible = isLiveVoiceActive) {
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.88f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 760.dp)
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
+                    .testTag("live_voice_status_pill")
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.GraphicEq,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        val liveStatusLabel = when {
+                            isSpeaking -> "$aiName কথা বলছে..."
+                            isThinking -> "$aiName ভাবছে..."
+                            listeningState is VoiceListeningState.Listening -> {
+                                val partial = (listeningState as VoiceListeningState.Listening).partialText
+                                if (partial.isBlank()) "লাইভ ভয়েস চালু — বলুন..." else "শুনছি: $partial"
+                            }
+                            else -> "লাইভ ভয়েস কথোপকথন চালু আছে"
+                        }
+                        Text(
+                            text = liveStatusLabel,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    TextButton(onClick = { viewModel.stopLiveVoice() }) {
+                        Text("বন্ধ করুন", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        // Voice active listening / error indicator when NOT already shown by Live Voice bar
+        AnimatedVisibility(visible = !isLiveVoiceActive && listeningState !is VoiceListeningState.Idle) {
             val (bannerText, isErr) = when (val st = listeningState) {
                 is VoiceListeningState.Listening ->
                     (if (st.partialText.isBlank()) "শুনছি... কথা বলুন" else "শুনছি: ${st.partialText}") to false
@@ -266,7 +367,12 @@ fun AssistantChatScreen(
                 .weight(1f)
                 .fillMaxWidth()
                 .widthIn(max = 760.dp),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 24.dp),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                end = 16.dp,
+                top = 12.dp,
+                bottom = if (showCompanion) 36.dp else 20.dp
+            ),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             if (messages.isEmpty() && streamingReply.isNullOrBlank()) {
@@ -398,13 +504,7 @@ fun AssistantChatScreen(
                     ),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(
-                        onSend = {
-                            if (inputText.isNotBlank() && !isThinking) {
-                                val toSend = inputText
-                                inputText = ""
-                                viewModel.sendUserMessage(toSend, activity)
-                            }
-                        }
+                        onSend = { submitTypedMessage() }
                     ),
                     modifier = Modifier
                         .weight(1f)
@@ -412,6 +512,48 @@ fun AssistantChatScreen(
                 )
 
                 val isListening = listeningState is VoiceListeningState.Listening
+                val waveTransition = rememberInfiniteTransition(label = "live_wave_pulse")
+                val waveScale by waveTransition.animateFloat(
+                    initialValue = 1f,
+                    targetValue = if (isLiveVoiceActive) 1.12f else 1f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 700, easing = FastOutSlowInEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "live_wave_scale"
+                )
+
+                // Live Voice / Audio Wave toggle right inside the main chat input bar
+                FilledIconButton(
+                    onClick = {
+                        focusManager.clearFocus(force = true)
+                        keyboardController?.hide()
+                        if (isLiveVoiceActive) {
+                            viewModel.stopLiveVoice()
+                        } else if (viewModel.deviceManager.hasOsPermission(Manifest.permission.RECORD_AUDIO)) {
+                            viewModel.startLiveVoice(activity)
+                        } else {
+                            pendingLiveVoiceAfterPerm = true
+                            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    },
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = if (isLiveVoiceActive) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+                        contentColor = if (isLiveVoiceActive) MaterialTheme.colorScheme.onPrimary
+                        else MaterialTheme.colorScheme.primary
+                    ),
+                    modifier = Modifier
+                        .size(48.dp)
+                        .scale(waveScale)
+                        .testTag("live_voice_wave_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.GraphicEq,
+                        contentDescription = if (isLiveVoiceActive) "লাইভ ভয়েস বন্ধ করুন" else "লাইভ ভয়েস কথোপকথন চালু করুন"
+                    )
+                }
+
                 IconButton(
                     onClick = {
                         if (isListening) {
@@ -419,6 +561,7 @@ fun AssistantChatScreen(
                         } else if (viewModel.deviceManager.hasOsPermission(Manifest.permission.RECORD_AUDIO)) {
                             viewModel.startVoiceInput(activity)
                         } else {
+                            pendingLiveVoiceAfterPerm = false
                             micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         }
                     },
@@ -435,11 +578,7 @@ fun AssistantChatScreen(
                 }
 
                 FilledIconButton(
-                    onClick = {
-                        val toSend = inputText
-                        inputText = ""
-                        viewModel.sendUserMessage(toSend, activity)
-                    },
+                    onClick = submitTypedMessage,
                     enabled = inputText.isNotBlank() && !isThinking,
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = MaterialTheme.colorScheme.primary,
@@ -458,7 +597,8 @@ fun AssistantChatScreen(
         }
         }
 
-        if (companionPrefs.selectedSlot in 1..5) {
+        // Render prominent companion strictly while Live Voice is active & not turned Off in Settings
+        if (showCompanion) {
             LiveCompanionCharacter(
                 selectedSlot = companionPrefs.selectedSlot,
                 motionState = companionMotionState,
@@ -469,14 +609,12 @@ fun AssistantChatScreen(
                     when {
                         isSpeaking -> viewModel.voiceManager.stopSpeaking()
                         listeningState is VoiceListeningState.Listening -> viewModel.voiceManager.stopListening()
-                        viewModel.deviceManager.hasOsPermission(Manifest.permission.RECORD_AUDIO) ->
-                            viewModel.startVoiceInput(activity)
-                        else -> micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        else -> viewModel.startLiveVoice(activity)
                     }
                 },
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(end = 10.dp, bottom = 86.dp)
+                    .padding(end = 10.dp, bottom = 84.dp)
             )
         }
     }

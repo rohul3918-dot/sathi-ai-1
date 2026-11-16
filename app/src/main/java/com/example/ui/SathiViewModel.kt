@@ -27,15 +27,20 @@ import com.google.firebase.auth.userProfileChangeRequest
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+import java.lang.ref.WeakReference
 
 sealed interface DataUiState<out T> {
     data object Loading : DataUiState<Nothing>
@@ -151,8 +156,67 @@ class SathiViewModel(
     private val _pendingPermissionPrompt = MutableStateFlow<PendingPermissionPrompt?>(null)
     val pendingPermissionPrompt: StateFlow<PendingPermissionPrompt?> = _pendingPermissionPrompt.asStateFlow()
 
+    private val _isLiveVoiceActive = MutableStateFlow(false)
+    val isLiveVoiceActive: StateFlow<Boolean> = _isLiveVoiceActive.asStateFlow()
+
     private val _statusBanner = MutableStateFlow<String?>(null)
     val statusBanner: StateFlow<String?> = _statusBanner.asStateFlow()
+
+    private var activeActivityRef: WeakReference<Activity>? = null
+    private var liveVoiceConsecutiveErrors = 0
+    private var liveVoiceLoopJob: Job? = null
+
+    init {
+        liveVoiceLoopJob = viewModelScope.launch {
+            combine(
+                _isLiveVoiceActive,
+                _isAiThinking,
+                isSpeakingState,
+                listeningState
+            ) { live, thinking, speaking, listening ->
+                LiveVoiceLoopSnapshot(live, thinking, speaking, listening)
+            }.collectLatest { snap ->
+                if (!snap.live || snap.thinking || snap.speaking) return@collectLatest
+                when (val ls = snap.listening) {
+                    is VoiceListeningState.Listening -> {
+                        liveVoiceConsecutiveErrors = 0
+                    }
+                    is VoiceListeningState.Idle -> {
+                        delay(420L)
+                        if (_isLiveVoiceActive.value && !_isAiThinking.value && !isSpeakingState.value &&
+                            listeningState.value is VoiceListeningState.Idle
+                        ) {
+                            beginVoiceRecognitionTurn(activeActivityRef?.get())
+                        }
+                    }
+                    is VoiceListeningState.Error -> {
+                        if (ls.message.contains("পারমিশন") || ls.message.contains("পাওয়া যায়নি")) {
+                            stopLiveVoice()
+                            return@collectLatest
+                        }
+                        liveVoiceConsecutiveErrors++
+                        if (liveVoiceConsecutiveErrors > 5) {
+                            stopLiveVoice()
+                            _statusBanner.value = "কোনো কথা শোনা যায়নি, লাইভ ভয়েস বিরতিতে গেছে।"
+                            return@collectLatest
+                        }
+                        delay(850L)
+                        if (_isLiveVoiceActive.value && !_isAiThinking.value && !isSpeakingState.value) {
+                            voiceManager.clearError()
+                            beginVoiceRecognitionTurn(activeActivityRef?.get())
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private data class LiveVoiceLoopSnapshot(
+        val live: Boolean,
+        val thinking: Boolean,
+        val speaking: Boolean,
+        val listening: VoiceListeningState
+    )
 
     fun showMessage(msg: String) {
         _statusBanner.value = msg
@@ -179,7 +243,8 @@ class SathiViewModel(
     fun sendUserMessage(
         rawText: String,
         activity: Activity?,
-        skipAddingUserBubble: Boolean = false
+        skipAddingUserBubble: Boolean = false,
+        forceSpeakReply: Boolean = _isLiveVoiceActive.value
     ) {
         val cleanText = rawText.trim()
         if (cleanText.isEmpty() || _isAiThinking.value) return
@@ -238,7 +303,7 @@ class SathiViewModel(
                         actionStatus = actionStatus,
                         clientOrder = baseOrder + 1
                     )
-                    if (currentPerms.allowTtsSpeech) {
+                    if (currentPerms.allowTtsSpeech || forceSpeakReply) {
                         val persona = VoicePersona.fromKey(currentPerms.voicePersona, currentPerms.voiceGender)
                         voiceManager.speakWithPersona(
                             text = finalReply,
@@ -752,7 +817,48 @@ class SathiViewModel(
         _statusBanner.value = outcome.summaryBn
     }
 
+    fun toggleLiveVoice(activity: Activity?) {
+        if (_isLiveVoiceActive.value) {
+            stopLiveVoice()
+        } else {
+            startLiveVoice(activity)
+        }
+    }
+
+    fun startLiveVoice(activity: Activity?) {
+        activeActivityRef = activity?.let { WeakReference(it) }
+        val perms = permissionsState.value
+        if (!perms.masterEnabled || !perms.allowVoiceMic) {
+            _pendingPermissionPrompt.value = PendingPermissionPrompt(
+                permissionKey = if (!perms.masterEnabled) "masterEnabled" else "allowVoiceMic",
+                titleBn = "ভয়েস ও মাইক্রোফোন",
+                osPermission = Manifest.permission.RECORD_AUDIO
+            )
+            _statusBanner.value = "লাইভ ভয়েস কথোপকথনের জন্য মাইক্রোফোন পারমিশন চালু করুন।"
+            return
+        }
+        if (!deviceManager.hasOsPermission(Manifest.permission.RECORD_AUDIO)) {
+            _statusBanner.value = "লাইভ ভয়েসের জন্য মাইক্রোফোন অনুমতি দিন।"
+            return
+        }
+        liveVoiceConsecutiveErrors = 0
+        _isLiveVoiceActive.value = true
+        voiceManager.clearError()
+        if (!_isAiThinking.value && !isSpeakingState.value) {
+            beginVoiceRecognitionTurn(activity)
+        }
+    }
+
+    fun stopLiveVoice() {
+        _isLiveVoiceActive.value = false
+        liveVoiceConsecutiveErrors = 0
+        voiceManager.stopListening()
+        voiceManager.stopSpeaking()
+        voiceManager.clearError()
+    }
+
     fun startVoiceInput(activity: Activity?) {
+        activeActivityRef = activity?.let { WeakReference(it) }
         val perms = permissionsState.value
         if (!perms.masterEnabled || !perms.allowVoiceMic) {
             _pendingPermissionPrompt.value = PendingPermissionPrompt(
@@ -763,17 +869,29 @@ class SathiViewModel(
             _statusBanner.value = "ভয়েস ব্যবহারের জন্য মাইক্রোফোন পারমিশন চালু করুন।"
             return
         }
+        beginVoiceRecognitionTurn(activity)
+    }
+
+    private fun beginVoiceRecognitionTurn(activity: Activity?) {
+        val perms = permissionsState.value
+        if (!perms.masterEnabled || !perms.allowVoiceMic) return
         val langForStt = when (perms.voiceLocale) {
             "en-US" -> "en"
             else -> perms.assistantLanguage
         }
         voiceManager.startListening(langForStt, perms.voiceLocale) { recognized ->
-            sendUserMessage(recognized, activity)
+            liveVoiceConsecutiveErrors = 0
+            sendUserMessage(
+                rawText = recognized,
+                activity = activity ?: activeActivityRef?.get(),
+                forceSpeakReply = _isLiveVoiceActive.value || perms.allowTtsSpeech
+            )
         }
     }
 
     override fun onCleared() {
         super.onCleared()
+        liveVoiceLoopJob?.cancel()
         voiceManager.release()
     }
 

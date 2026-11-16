@@ -275,7 +275,7 @@ fun CompanionCharacterSettingsCard(
                                     style = MaterialTheme.typography.titleSmall
                                 )
                                 Text(
-                                    text = "অ্যাপ থেকে বের হলে চরিত্রটি ওপরের স্ট্যাটাস বারের পাশে ভাসতে থাকবে",
+                                    text = "লাইভ ভয়েস চালু অবস্থায় অ্যাপের বাইরে গেলেও চরিত্রটি স্ক্রিনের ওপর ভাসতে থাকবে",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )

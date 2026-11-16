@@ -15,7 +15,9 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.provider.Settings
 import android.util.Log
 import android.util.TypedValue
@@ -43,7 +45,17 @@ class FloatingCompanionService : Service() {
     private var layoutParams: WindowManager.LayoutParams? = null
     private var characterImageView: ImageView? = null
     private var breathAnimator: AnimatorSet? = null
+    private var slideAnimator: ValueAnimator? = null
     private var isDockedAside = false
+
+    private var restX = 0
+    private var restY = 0
+    private var isMovedUpForTouch = false
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val glideBackDownRunnable = Runnable {
+        glideOverlayBackDown()
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -98,15 +110,17 @@ class FloatingCompanionService : Service() {
             setPadding(dp(4), dp(2), dp(4), dp(4))
         }
 
-        val charSize = dp(82)
+        // Moderate floating scale: slightly smaller than in-app (~164x210dp) yet clearly recognizable & expressive
+        val charWidth = dp(122)
+        val charHeight = dp(150)
         val characterFrame = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(charSize, dp(96))
+            layoutParams = LinearLayout.LayoutParams(charWidth, charHeight)
         }
 
         val imageView = ImageView(this).apply {
             setImageResource(drawableId)
             scaleType = ImageView.ScaleType.FIT_CENTER
-            contentDescription = "Sathi AI Companion"
+            contentDescription = "Sathi AI Live Companion"
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
@@ -117,14 +131,14 @@ class FloatingCompanionService : Service() {
         val closeBadge = TextView(this).apply {
             text = "✕"
             setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             gravity = Gravity.CENTER
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(Color.argb(190, 15, 25, 45))
-                setStroke(dp(1), Color.argb(120, 46, 230, 214))
+                setColor(Color.argb(200, 15, 25, 45))
+                setStroke(dp(1), Color.argb(140, 46, 230, 214))
             }
-            layoutParams = FrameLayout.LayoutParams(dp(22), dp(22)).apply {
+            layoutParams = FrameLayout.LayoutParams(dp(24), dp(24)).apply {
                 gravity = Gravity.TOP or Gravity.END
             }
             setOnClickListener {
@@ -136,14 +150,14 @@ class FloatingCompanionService : Service() {
         characterFrame.addView(closeBadge)
 
         val pillHint = TextView(this).apply {
-            text = "কথা বলুন"
+            text = "লাইভ সাথী"
             setTextColor(Color.parseColor("#E8F6FF"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
-            setPadding(dp(8), dp(2), dp(8), dp(2))
+            setPadding(dp(9), dp(3), dp(9), dp(3))
             background = GradientDrawable().apply {
                 cornerRadius = dp(12).toFloat()
-                setColor(Color.argb(210, 10, 18, 34))
-                setStroke(dp(1), Color.argb(140, 46, 230, 214))
+                setColor(Color.argb(215, 10, 18, 34))
+                setStroke(dp(1), Color.argb(160, 46, 230, 214))
             }
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -165,18 +179,22 @@ class FloatingCompanionService : Service() {
 
         val screenWidth = resources.displayMetrics.widthPixels
         val statusBarOffset = resolveStatusBarOffsetPx()
+        restX = (screenWidth - dp(134)).coerceAtLeast(0)
+        restY = statusBarOffset + dp(110)
+
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             typeFlag,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = (screenWidth - dp(96)).coerceAtLeast(0)
-            y = statusBarOffset
+            x = restX
+            y = restY
         }
 
         var initialX = 0
@@ -188,7 +206,15 @@ class FloatingCompanionService : Service() {
         container.setOnTouchListener { v, event ->
             val currentParams = layoutParams ?: return@setOnTouchListener false
             when (event.actionMasked) {
+                MotionEvent.ACTION_OUTSIDE -> {
+                    // User touched elsewhere on screen while using another app:
+                    // move character smoothly upward & keep resetting 3.5s idle timer.
+                    moveOverlayUpForScreenTouch()
+                    false
+                }
                 MotionEvent.ACTION_DOWN -> {
+                    mainHandler.removeCallbacks(glideBackDownRunnable)
+                    slideAnimator?.cancel()
                     initialX = currentParams.x
                     initialY = currentParams.y
                     initialTouchX = event.rawX
@@ -203,8 +229,8 @@ class FloatingCompanionService : Service() {
                         moved = true
                     }
                     if (moved) {
-                        currentParams.x = (initialX + dx).coerceIn(-dp(34), screenWidth - dp(44))
-                        currentParams.y = (initialY + dy).coerceIn(dp(8), resources.displayMetrics.heightPixels - dp(120))
+                        currentParams.x = (initialX + dx).coerceIn(-dp(42), screenWidth - dp(48))
+                        currentParams.y = (initialY + dy).coerceIn(dp(8), resources.displayMetrics.heightPixels - dp(170))
                         runCatching { wm.updateViewLayout(v, currentParams) }
                     }
                     true
@@ -212,26 +238,28 @@ class FloatingCompanionService : Service() {
                 MotionEvent.ACTION_UP -> {
                     if (!moved) {
                         if (isDockedAside) {
-                            // Un-dock cleanly first on tap if tucked aside, otherwise open talk in Sathi AI
                             isDockedAside = false
-                            currentParams.x = (screenWidth - dp(96)).coerceAtLeast(0)
+                            currentParams.x = (screenWidth - dp(134)).coerceAtLeast(0)
+                            restX = currentParams.x
                             v.alpha = 1f
                             runCatching { wm.updateViewLayout(v, currentParams) }
                         } else {
                             openMainTalkScreen()
                         }
                     } else {
-                        // Snap aside if dragged very close to left/right edge, otherwise dock cleanly near status bar/edge
                         val mid = currentParams.x + v.width / 2
-                        if (currentParams.x < -dp(10) || currentParams.x > screenWidth - dp(68)) {
+                        if (currentParams.x < -dp(12) || currentParams.x > screenWidth - dp(86)) {
                             isDockedAside = true
-                            currentParams.x = if (mid < screenWidth / 2) -dp(32) else screenWidth - dp(54)
-                            v.alpha = 0.72f
+                            currentParams.x = if (mid < screenWidth / 2) -dp(44) else screenWidth - dp(68)
+                            v.alpha = 0.76f
                         } else {
                             isDockedAside = false
-                            currentParams.x = if (mid < screenWidth / 2) dp(8) else (screenWidth - dp(96)).coerceAtLeast(0)
+                            currentParams.x = if (mid < screenWidth / 2) dp(8) else (screenWidth - dp(134)).coerceAtLeast(0)
                             v.alpha = 1f
                         }
+                        restX = currentParams.x
+                        restY = currentParams.y
+                        isMovedUpForTouch = false
                         runCatching { wm.updateViewLayout(v, currentParams) }
                     }
                     true
@@ -251,26 +279,81 @@ class FloatingCompanionService : Service() {
         }
     }
 
+    private fun moveOverlayUpForScreenTouch() {
+        val root = overlayRoot ?: return
+        val params = layoutParams ?: return
+        val wm = windowManager ?: return
+
+        // Reset the 3.5-second idle timer on every outside touch
+        mainHandler.removeCallbacks(glideBackDownRunnable)
+        mainHandler.postDelayed(glideBackDownRunnable, TOUCH_IDLE_RETURN_DELAY_MS)
+
+        if (isMovedUpForTouch) return
+        isMovedUpForTouch = true
+        val topAvoidY = dp(10)
+        animateOverlayY(root, params, wm, params.y, topAvoidY, 0.56f, 220L)
+    }
+
+    private fun glideOverlayBackDown() {
+        val root = overlayRoot ?: return
+        val params = layoutParams ?: return
+        val wm = windowManager ?: return
+        if (!isMovedUpForTouch) return
+        isMovedUpForTouch = false
+        val targetAlpha = if (isDockedAside) 0.76f else 1f
+        animateOverlayY(root, params, wm, params.y, restY, targetAlpha, 340L)
+    }
+
+    private fun animateOverlayY(
+        root: View,
+        params: WindowManager.LayoutParams,
+        wm: WindowManager,
+        fromY: Int,
+        toY: Int,
+        targetAlpha: Float,
+        durationMs: Long
+    ) {
+        slideAnimator?.cancel()
+        val startAlpha = root.alpha
+        slideAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = durationMs
+            interpolator = AccelerateDecelerateInterpolator()
+            addUpdateListener { anim ->
+                val frac = anim.animatedFraction
+                params.y = (fromY + (toY - fromY) * frac).toInt()
+                root.alpha = startAlpha + (targetAlpha - startAlpha) * frac
+                runCatching { wm.updateViewLayout(root, params) }
+            }
+            start()
+        }
+    }
+
     private fun startSubtleIdleAnimation(target: View) {
         breathAnimator?.cancel()
-        val floatY = ObjectAnimator.ofFloat(target, View.TRANSLATION_Y, -dp(3).toFloat(), dp(4).toFloat()).apply {
-            duration = 1900L
+        val floatY = ObjectAnimator.ofFloat(target, View.TRANSLATION_Y, -dp(4).toFloat(), dp(5).toFloat()).apply {
+            duration = 1850L
             repeatCount = ValueAnimator.INFINITE
             repeatMode = ValueAnimator.REVERSE
             interpolator = AccelerateDecelerateInterpolator()
         }
-        val scaleX = ObjectAnimator.ofFloat(target, View.SCALE_X, 0.98f, 1.03f).apply {
-            duration = 1900L
+        val sway = ObjectAnimator.ofFloat(target, View.ROTATION, -1.6f, 1.6f).apply {
+            duration = 2150L
+            repeatCount = ValueAnimator.INFINITE
+            repeatMode = ValueAnimator.REVERSE
+            interpolator = AccelerateDecelerateInterpolator()
+        }
+        val scaleX = ObjectAnimator.ofFloat(target, View.SCALE_X, 0.98f, 1.035f).apply {
+            duration = 1850L
             repeatCount = ValueAnimator.INFINITE
             repeatMode = ValueAnimator.REVERSE
         }
-        val scaleY = ObjectAnimator.ofFloat(target, View.SCALE_Y, 0.98f, 1.03f).apply {
-            duration = 1900L
+        val scaleY = ObjectAnimator.ofFloat(target, View.SCALE_Y, 0.98f, 1.035f).apply {
+            duration = 1850L
             repeatCount = ValueAnimator.INFINITE
             repeatMode = ValueAnimator.REVERSE
         }
         breathAnimator = AnimatorSet().apply {
-            playTogether(floatY, scaleX, scaleY)
+            playTogether(floatY, sway, scaleX, scaleY)
             start()
         }
     }
@@ -290,6 +373,9 @@ class FloatingCompanionService : Service() {
     }
 
     private fun removeOverlayView() {
+        mainHandler.removeCallbacks(glideBackDownRunnable)
+        slideAnimator?.cancel()
+        slideAnimator = null
         breathAnimator?.cancel()
         breathAnimator = null
         val root = overlayRoot ?: return
@@ -297,6 +383,7 @@ class FloatingCompanionService : Service() {
         overlayRoot = null
         characterImageView = null
         layoutParams = null
+        isMovedUpForTouch = false
     }
 
     override fun onDestroy() {
@@ -315,7 +402,7 @@ class FloatingCompanionService : Service() {
                         "সাথী ভাসমান চরিত্র",
                         NotificationManager.IMPORTANCE_LOW
                     ).apply {
-                        description = "অ্যাপের বাইরে ভাসমান সাথী চরিত্র চালু রাখতে ব্যবহৃত হয়।"
+                        description = "লাইভ ভয়েস চালু থাকলে অ্যাপের বাইরে ভাসমান সাথী চরিত্র দেখাতে ব্যবহৃত হয়।"
                         setShowBadge(false)
                     }
                 )
@@ -345,8 +432,8 @@ class FloatingCompanionService : Service() {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher_round)
-            .setContentTitle("সাথী ভাসমান সঙ্গী সক্রিয়")
-            .setContentText("কথা বলতে চরিত্রে ট্যাপ করুন অথবা এখান থেকে বন্ধ করুন")
+            .setContentTitle("লাইভ সাথী চরিত্র সক্রিয়")
+            .setContentText("অ্যাপে ফিরতে বা কথা বলতে চরিত্রে ট্যাপ করুন")
             .setContentIntent(openIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -356,8 +443,7 @@ class FloatingCompanionService : Service() {
 
     private fun resolveStatusBarOffsetPx(): Int {
         val resId = resources.getIdentifier("status_bar_height", "dimen", "android")
-        val statusHeight = if (resId > 0) resources.getDimensionPixelSize(resId) else dp(28)
-        return (statusHeight * 0.45f).toInt().coerceAtLeast(dp(12))
+        return if (resId > 0) resources.getDimensionPixelSize(resId) else dp(28)
     }
 
     private fun dp(value: Int): Int {
@@ -372,6 +458,7 @@ class FloatingCompanionService : Service() {
         private const val TAG = "FloatingCompanion"
         private const val CHANNEL_ID = "sathi_floating_companion_channel"
         private const val NOTIFICATION_ID = 7701
+        private const val TOUCH_IDLE_RETURN_DELAY_MS = 3500L
         const val ACTION_START_OR_UPDATE = "com.example.action.START_FLOATING_COMPANION"
         const val ACTION_STOP_OVERLAY = "com.example.action.STOP_FLOATING_COMPANION"
         const val EXTRA_CHARACTER_SLOT = "extra_character_slot"

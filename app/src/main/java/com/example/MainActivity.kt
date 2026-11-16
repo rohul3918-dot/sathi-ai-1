@@ -18,7 +18,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.exclude
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
@@ -307,6 +310,7 @@ private fun SathiHomeShell(
     val tasksState by viewModel.tasksState.collectAsStateWithLifecycle()
     val userProfile by viewModel.userProfileState.collectAsStateWithLifecycle()
     val companionPrefs by viewModel.companionPrefsState.collectAsStateWithLifecycle()
+    val isLiveVoiceActive by viewModel.isLiveVoiceActive.collectAsStateWithLifecycle()
     val statusBanner by viewModel.statusBanner.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -314,13 +318,13 @@ private fun SathiHomeShell(
         if (voiceTriggerNonce > 0) {
             onRouteChange(SathiRoute.CHAT)
             if (viewModel.deviceManager.hasOsPermission(Manifest.permission.RECORD_AUDIO)) {
-                viewModel.startVoiceInput(activity)
+                viewModel.startLiveVoice(activity)
             }
             onVoiceTriggerHandled()
         }
     }
 
-    DisposableEffect(lifecycleOwner, companionPrefs, activity, context) {
+    DisposableEffect(lifecycleOwner, companionPrefs, isLiveVoiceActive, activity, context) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_START -> {
@@ -328,6 +332,7 @@ private fun SathiHomeShell(
                 }
                 Lifecycle.Event.ON_STOP -> {
                     if (activity?.isChangingConfigurations != true &&
+                        isLiveVoiceActive &&
                         companionPrefs.floatingOverlayEnabled &&
                         companionPrefs.selectedSlot in 1..5 &&
                         FloatingCompanionService.canShowOverlay(context)
@@ -433,7 +438,7 @@ private fun SathiHomeShell(
     }
 
     Scaffold(
-        contentWindowInsets = WindowInsets.safeDrawing,
+        contentWindowInsets = WindowInsets.safeDrawing.exclude(WindowInsets.ime),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             when (currentRoute) {
@@ -655,6 +660,7 @@ private fun SathiHomeShell(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .consumeWindowInsets(innerPadding)
         ) {
             when (currentRoute) {
                 SathiRoute.CHAT -> AssistantChatScreen(
